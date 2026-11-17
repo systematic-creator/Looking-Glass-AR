@@ -11,6 +11,11 @@ signal replace_pressed()
 signal place_pressed()
 signal place_in_front_pressed()
 signal play_without_ar_pressed()
+signal trace_pressed()
+signal use_area_pressed()
+signal trace_done_pressed()
+signal trace_clear_pressed()
+signal trace_cancel_pressed()
 ## Five quick taps on the step panel toggle the AR debug line.
 signal debug_toggled(visible: bool)
 
@@ -26,6 +31,11 @@ var sweep_hint: Control
 var place_button: Button
 var place_in_front_button: Button
 var play_without_ar_button: Button
+var trace_button: Button
+var use_area_button: Button
+var trace_done_button: Button
+var trace_clear_button: Button
+var trace_cancel_button: Button
 var lock_button: Button
 var unlock_button: Button
 var magnify_button: Button
@@ -114,8 +124,18 @@ func _ready() -> void:
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 18)
 	column.add_child(row)
-	place_button = _button(row, "Place board", PRIMARY_SIZE, true)
+	trace_button = _button(row, "Trace play area", PRIMARY_SIZE, true)
+	trace_button.pressed.connect(func() -> void: trace_pressed.emit())
+	use_area_button = _button(row, "Use traced area", PRIMARY_SIZE, true)
+	use_area_button.pressed.connect(func() -> void: use_area_pressed.emit())
+	place_button = _button(row, "Place here", SECONDARY_SIZE, false)
 	place_button.pressed.connect(func() -> void: place_pressed.emit())
+	trace_done_button = _button(row, "Done", PRIMARY_SIZE, true)
+	trace_done_button.pressed.connect(func() -> void: trace_done_pressed.emit())
+	trace_clear_button = _button(row, "Clear", SECONDARY_SIZE, false)
+	trace_clear_button.pressed.connect(func() -> void: trace_clear_pressed.emit())
+	trace_cancel_button = _button(row, "Cancel", SECONDARY_SIZE, false)
+	trace_cancel_button.pressed.connect(func() -> void: trace_cancel_pressed.emit())
 	place_in_front_button = _button(row, "Place in front of me", PRIMARY_SIZE, true)
 	place_in_front_button.pressed.connect(func() -> void: place_in_front_pressed.emit())
 	play_without_ar_button = _button(row, "Play without AR", SECONDARY_SIZE, false)
@@ -199,6 +219,11 @@ func _button(parent: Control, text: String, min_size: Vector2, primary: bool) ->
 func apply_flow(flow: CalibrationFlow) -> void:
 	var shown: Dictionary = flow.controls()
 	place_button.visible = bool(shown["place"])
+	trace_button.visible = bool(shown["trace"])
+	use_area_button.visible = bool(shown["use_area"])
+	trace_done_button.visible = bool(shown["trace_done"])
+	trace_clear_button.visible = bool(shown["trace_clear"])
+	trace_cancel_button.visible = bool(shown["trace_cancel"])
 	place_in_front_button.visible = bool(shown["place_in_front"])
 	play_without_ar_button.visible = bool(shown["play_without_ar"])
 	lock_button.visible = bool(shown["lock"])
@@ -224,10 +249,15 @@ func set_status(text: String) -> void:
 
 ## True if a screen position lands on one of the AR buttons.
 func is_over_ui(screen_position: Vector2) -> bool:
-	for button: Button in [place_button, place_in_front_button, play_without_ar_button, lock_button, unlock_button, magnify_button, recenter_button, replace_button]:
+	for button: Button in all_buttons():
 		if button.visible and button.get_global_rect().has_point(screen_position):
 			return true
 	return _banner.visible and _banner.get_global_rect().has_point(screen_position)
+
+
+func all_buttons() -> Array[Button]:
+	return [place_button, trace_button, use_area_button, trace_done_button, trace_clear_button, trace_cancel_button,
+		place_in_front_button, play_without_ar_button, lock_button, unlock_button, magnify_button, recenter_button, replace_button]
 
 
 ## Set the debug text; `forced` shows it even if the player has not toggled it

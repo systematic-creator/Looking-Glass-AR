@@ -246,8 +246,8 @@ func _test_tap_routing() -> void:
 	host.route_gesture({"kind": &"tap", "position": screen_2})
 	check("input: a paused game ignores taps", game.rules.cells[2] == TicTacToeRules.Mark.NONE and host.get_status_text().begins_with("Paused"))
 	game.lg_set_app_paused(false)
-	host._unhandled_input(touch(0, screen_2, true))
-	host._unhandled_input(touch(0, screen_2, false))
+	host._input(touch(0, screen_2, true))
+	host._input(touch(0, screen_2, false))
 	check("input: raw touch events become board taps", game.rules.cells[2] == TicTacToeRules.Mark.O)
 	await free_host(host)
 
@@ -297,9 +297,9 @@ func _test_ar_launch_lifecycle() -> void:
 	check("ar launch: taps never reach the game during calibration", probe.taps.is_empty())
 	fake.surface_found = true
 	await frames(2)
-	host._unhandled_input(touch(0, screen_centre, true))
+	host._input(touch(0, screen_centre, true))
 	ar._unhandled_input(touch(0, screen_centre, true))
-	host._unhandled_input(touch(0, screen_centre, false))
+	host._input(touch(0, screen_centre, false))
 	ar._unhandled_input(touch(0, screen_centre, false))
 	check("ar launch: tapping the screen on a found surface places the board (not a game tap)", (
 		ar.is_placed() and probe.taps.is_empty() and not probe.is_playing()

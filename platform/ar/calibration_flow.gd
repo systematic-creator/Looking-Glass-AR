@@ -5,13 +5,17 @@ extends RefCounted
 ##   SCANNING       sweep the phone; live tracking status; after
 ##                  FALLBACK_OFFER_SECONDS offer "Place in front of me" and
 ##                  "Play without AR" so the player is never stuck.
-##   SURFACE_FOUND  a reticle sits on a surface: "Place board" (or tap).
-##   ADJUSTING      drag / pinch / twist the board, then Lock or Re-place.
+##   SURFACE_FOUND  a reticle sits on a surface: "Trace play area"
+##                  (encouraged) or "Place here" (or tap) to skip tracing.
+##   TRACING        the player draws around the play area with one finger;
+##                  the board is auto-fitted inside the outline.
+##   ADJUSTING      drag / pinch / twist the board (kept inside the traced
+##                  area or the surface's edge), then Lock or Re-place.
 ##   LOCKED         the game runs. Unlock returns to ADJUSTING.
 ##
 ## The game only plays (LGGame.is_playing()) while LOCKED.
 
-enum Step { SCANNING, SURFACE_FOUND, ADJUSTING, LOCKED }
+enum Step { SCANNING, SURFACE_FOUND, TRACING, ADJUSTING, LOCKED }
 
 ## Seconds of scanning without a surface before the fallbacks are offered.
 const FALLBACK_OFFER_SECONDS: float = 12.0
@@ -38,6 +42,12 @@ var tracking_seconds: float = 0.0
 ## The board was placed in front of the camera before ARCore tracked; it
 ## follows the camera until tracking is stable, then becomes a world anchor.
 var anchor_pending: bool = false
+## An outline traced earlier this session can be reused (switching games).
+var has_saved_area: bool = false
+## Points in the current tracing stroke (for the HUD hint).
+var trace_points: int = 0
+## Why the last trace was rejected ("" = none).
+var trace_error: String = ""
 
 ## Continuous TRACKING needed before a camera-held board is anchored.
 const STABLE_TRACKING_SECONDS: float = 1.0
@@ -47,6 +57,25 @@ func restart() -> void:
 	step = Step.SCANNING
 	scan_seconds = 0.0
 	anchor_pending = false
+	trace_points = 0
+	trace_error = ""
+
+
+## Start tracing (only from SURFACE_FOUND). Returns true if started.
+func begin_trace() -> bool:
+	if step != Step.SURFACE_FOUND:
+		return false
+	step = Step.TRACING
+	trace_points = 0
+	trace_error = ""
+	return true
+
+
+## Leave tracing without placing: back to looking at the surface.
+func cancel_trace() -> void:
+	if step == Step.TRACING:
+		step = Step.SURFACE_FOUND
+		trace_points = 0
 
 
 ## Record the latest tracking diagnostics (call every frame in any step).
@@ -69,6 +98,8 @@ func update(delta: float, info: Dictionary, surface_found: bool) -> void:
 	if step == Step.SCANNING or step == Step.SURFACE_FOUND:
 		scan_seconds += maxf(0.0, delta)
 		step = Step.SURFACE_FOUND if surface_found else Step.SCANNING
+	elif step == Step.TRACING:
+		scan_seconds += maxf(0.0, delta)
 
 
 func placed() -> void:
@@ -100,6 +131,11 @@ func is_tracking() -> bool:
 func controls() -> Dictionary:
 	return {
 		"place": step == Step.SURFACE_FOUND,
+		"trace": step == Step.SURFACE_FOUND,
+		"use_area": has_saved_area and (step == Step.SCANNING or step == Step.SURFACE_FOUND),
+		"trace_done": step == Step.TRACING and trace_points >= 3,
+		"trace_clear": step == Step.TRACING and trace_points > 0,
+		"trace_cancel": step == Step.TRACING,
 		"place_in_front": offers_fallback(),
 		"play_without_ar": offers_fallback(),
 		"lock": step == Step.ADJUSTING,
@@ -118,6 +154,8 @@ func title() -> String:
 			return "Step 1 of 3 · Find a surface"
 		Step.SURFACE_FOUND:
 			return "Step 2 of 3 · Place the board"
+		Step.TRACING:
+			return "Step 2 of 3 · Trace the play area"
 		Step.ADJUSTING:
 			return "Step 3 of 3 · Adjust, then lock"
 		_:
@@ -132,7 +170,15 @@ func message() -> String:
 				text += "\nNo surface yet? Place the board in front of you instead."
 			return text
 		Step.SURFACE_FOUND:
-			return "Surface found. Tap Place board, or tap the screen."
+			if not trace_error.is_empty():
+				return trace_error
+			return "Surface found. Trace the play area for the best fit, or tap Place here."
+		Step.TRACING:
+			if trace_points == 0 and not trace_error.is_empty():
+				return trace_error
+			if trace_points == 0:
+				return "Start on the surface and draw all the way around the area you want to play on."
+			return "Keep going around the edge, then lift your finger."
 		Step.ADJUSTING:
 			if anchor_pending:
 				return "Holding the board in front of you until AR tracking starts. Move the phone slowly; you can Lock and play now."

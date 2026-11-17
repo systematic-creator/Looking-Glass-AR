@@ -7,6 +7,11 @@ extends LGGame
 const CELL: float = 0.09
 const GAP: float = 0.006
 const TILE_HEIGHT: float = 0.012
+## Taps this far past the grid's edge (metres) still pick the edge cell, so
+## a slightly-off fingertip on a phone still counts.
+const TAP_TOLERANCE: float = 0.03
+## The floating banner sits this far beyond the board's far edge.
+const LABEL_GAP: float = 0.05
 
 var rules: TicTacToeRules = TicTacToeRules.new()
 var tiles: Array[MeshInstance3D] = []
@@ -50,8 +55,8 @@ func _on_board_ready() -> void:
 	_label.pixel_size = 0.0006
 	_label.font_size = 48
 	_label.outline_size = 12
-	_label.position = Vector3(0.0, 0.06, -get_board_size().y * 0.5 - 0.03)
 	add_child(_label)
+	_place_label(Vector3(0.0, 0.0, 1.0))
 	_refresh_status()
 
 
@@ -93,10 +98,11 @@ static func cell_center(index: int) -> Vector3:
 	return Vector3((col - 1) * CELL, 0.0, (row - 1) * CELL)
 
 
-## Cell under a board-space point, or -1 off the grid.
+## Cell under a board-space point (edge cells extend TAP_TOLERANCE past the
+## grid), or -1 off the grid.
 static func cell_at(point: Vector3) -> int:
 	var half: float = CELL * 1.5
-	if absf(point.x) >= half or absf(point.z) >= half:
+	if absf(point.x) >= half + TAP_TOLERANCE or absf(point.z) >= half + TAP_TOLERANCE:
 		return -1
 	var col: int = clampi(floori((point.x + half) / CELL), 0, 2)
 	var row: int = clampi(floori((point.z + half) / CELL), 0, 2)
@@ -140,6 +146,27 @@ func _refresh_status() -> void:
 	set_status(text)
 	if _label != null:
 		_label.text = text
+
+
+func _process(_delta: float) -> void:
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera != null and _label != null:
+		_place_label(to_local(camera.global_position))
+
+
+## Keep the banner just beyond the board's far side as seen from the viewer,
+## low over the surface, so it never covers a cell.
+func _place_label(viewer_local: Vector3) -> void:
+	var toward := Vector2(viewer_local.x, viewer_local.z)
+	if toward.length() < 0.001:
+		toward = Vector2(0.0, 1.0)
+	toward = toward.normalized()
+	var reach: float = maxf(get_board_size().x, get_board_size().y) * 0.5 * 1.42 + LABEL_GAP
+	_label.position = Vector3(-toward.x * reach, 0.03, -toward.y * reach)
+
+
+func label_position() -> Vector3:
+	return _label.position
 
 
 func _material(color: Color) -> StandardMaterial3D:

@@ -10,6 +10,10 @@ var surface_pose: Transform3D = Transform3D(Basis(), Vector3(0.0, -0.4, -0.7))
 var info: Dictionary = {"camera_state": 0, "failure_reason": 0, "frames": 30, "points": 64, "planes": 0, "upward_planes": 0}
 var anchors_made: int = 0
 var release_count: int = 0
+## Optional scene model: (normalized screen) -> hit Dictionary.
+var hit_callback: Callable = Callable()
+## Optional tracked planes; replaces the default single surface.
+var planes: Array = []
 var _poses: Dictionary = {}
 var _next_id: int = 1
 
@@ -51,6 +55,8 @@ func tracking_info() -> Dictionary:
 
 
 func horizontal_planes() -> Array:
+	if not planes.is_empty():
+		return planes
 	if not surface_found:
 		return []
 	return [{"pose": surface_pose, "polygon": PackedVector2Array([Vector2(-0.3, -0.2), Vector2(0.3, -0.2), Vector2(0.3, 0.2), Vector2(-0.3, 0.2)])}]
@@ -60,17 +66,21 @@ func point_cloud(_max_points: int) -> PackedVector3Array:
 	return PackedVector3Array([Vector3(0.0, -0.4, -0.6), Vector3(0.1, -0.4, -0.7)])
 
 
-func hit_test(_normalized_screen: Vector2) -> Dictionary:
+func hit_test(normalized_screen: Vector2) -> Dictionary:
+	if hit_callback.is_valid():
+		return hit_callback.call(normalized_screen) as Dictionary
 	if not surface_found:
 		return {"hit": false}
 	return {"hit": true, "pose": surface_pose, "kind": "plane"}
 
 
-func create_anchor_at_screen(_normalized_screen: Vector2) -> Dictionary:
-	if not surface_found:
+func create_anchor_at_screen(normalized_screen: Vector2) -> Dictionary:
+	var hit: Dictionary = hit_test(normalized_screen)
+	if not bool(hit.get("hit", false)):
 		return {"id": -1}
-	var id: int = create_anchor(surface_pose)
-	return {"id": id, "pose": surface_pose}
+	var pose: Transform3D = hit["pose"] as Transform3D
+	var id: int = create_anchor(pose)
+	return {"id": id, "pose": pose}
 
 
 func create_anchor(pose: Transform3D) -> int:

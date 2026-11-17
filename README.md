@@ -38,6 +38,7 @@ platform/
   ar/anchor_service.gd    the one world anchor (+ Cloud Anchor stub for multiplayer)
   ar/board_placement.gd   player's offset / rotation / size, saved per game
   ar/gesture_tracker.gd   tap / drag / pinch+twist from raw touches
+  ar/surface_region.gd    play-area polygon: fit / clamp the board footprint
 games/
   tic_tac_toe/            sample game
   competitive_evolution/  placeholder adapter
@@ -70,17 +71,33 @@ space** and reacts to lifecycle hooks and board-space taps.
    feature-point and surface counts, drawn as an overlay on the video. After
    ~12 s without a surface, **Place in front of me** (about 0.6 m ahead, 0.35 m
    down) and **Play without AR** are offered.
-2. **Place.** When the ring reticle sits on a surface, tap **Place board** or
-   tap the screen. Once a surface is detected, only hits inside it count.
-3. **Adjust, then lock.** Drag to move, pinch to resize, twist to rotate. The
-   game's footprint is outlined. **Lock** starts the game. **Unlock** pauses it
-   to adjust again; **Re-place** goes back to step 1.
+2. **Trace the play area (recommended).** Tap **Trace play area** and run a
+   finger around the edge of the table / board you want to play on. The first
+   touch must land on a detected surface; that sets the trace height. Every
+   later point is projected onto that height (so you can trace right along a
+   real edge), and points over a clearly higher object are dropped. **Done**
+   closes the outline (at least 3 points), the board is auto-fitted (size up to
+   2x the game's native size, rotated to the outline's long axis) and the
+   outline stays visible while unlocked. The outline is kept for the session:
+   the next game offers **Use traced area**.
+   *Skip:* tap **Place here** (or the screen) to place on the reticle instead.
+   The board is then fitted and kept inside the selected ARCore plane's
+   boundary.
+3. **Adjust, then lock.** Drag to move, pinch to resize, twist to rotate. Drags
+   project onto the selected surface's height only, and the footprint is
+   clamped inside the traced area (or the plane): it stops at the edge instead
+   of hanging off it. **Lock** starts the game. **Unlock** pauses it to adjust
+   again; **Re-place** goes back to step 1.
 
 If ARCore is not tracking yet, *Place in front of me* holds the board in front
 of the camera (so it never slides away) and turns it into a world anchor
 after one second of continuous tracking. Tap the step panel **five times** to
 show the AR debug line (it also appears by itself after the scan timeout and
 in debuggable builds).
+The debug line also shows the play-area source and size (`area traced 0.42m²`
+/ `area plane ...`) and tap counters (`taps N/M last x,z`: taps that hit the board / taps
+seen, last board-space point). Every tap on the board shows a
+short white ring where it landed.
 
 The game does not play while the board is being placed: `LGGame.is_playing()`
 is true only when the board is locked and the app is in the foreground.

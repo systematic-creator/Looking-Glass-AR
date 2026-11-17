@@ -41,6 +41,22 @@ const DIAG_INTERVAL: float = 0.2
 const MAX_OVERLAY_POINTS: int = 400
 ## Seconds to wait for ARCore to report an initialized session before falling back.
 const START_GRACE_SECONDS: float = 6.0
+## A plane counts as "the same surface" within this height difference (m).
+const PLANE_HEIGHT_TOLERANCE: float = 0.03
+## Traced points over a surface this much higher than the traced one are
+## rejected (the finger is on an object standing on the play area).
+const TRACE_HEIGHT_TOLERANCE: float = 0.04
+const TRACE_MIN_SPACING: float = 0.01
+const TRACE_MAX_RADIUS: float = 3.0
+## Drag rays flatter than this (|dot(ray, up)|) are ignored: near the horizon
+## a finger's pixel moves the board metres.
+const MIN_RAY_ELEVATION: float = 0.12
+const MAX_RAY_DISTANCE: float = 4.0
+const MAX_DRAG_STEP: float = 0.15
+
+## The outline traced most recently in this app session (XROrigin3D space,
+## closed polygon at one height), offered as "Use traced area" next time.
+static var saved_area_world: PackedVector3Array = PackedVector3Array()
 
 var mode: Mode = Mode.FALLBACK
 var phase: Phase = Phase.SEARCHING
@@ -56,6 +72,13 @@ var environment: Environment
 var board_frame: Node3D
 ## Where this game's placement (size, rotation) is saved.
 var placement_path: String = BoardPlacement.SAVE_PATH
+## The game's footprint at scale 1 (metres), for fitting and clamping.
+var board_size: Vector2 = Vector2(0.4, 0.4)
+## Where the board must stay (anchor space): the traced outline or the
+## placed-on plane's polygon. Null when unknown (no plane, camera-held).
+var region: SurfaceRegion
+## Appended to the AR debug line (e.g. GameHost's tap diagnostics).
+var extra_debug: String = ""
 
 var bridge: ARCoreBridge
 var anchors: AnchorService
@@ -84,6 +107,16 @@ var _overlay: Node3D
 var _overlay_points: MultiMeshInstance3D
 var _overlay_planes: Node3D
 var _last_locked: bool = false
+var _region_node: MeshInstance3D
+var _trace_node: MeshInstance3D
+var _trace_points: PackedVector3Array = PackedVector3Array()
+var _trace_height: float = 0.0
+var _trace_touch: int = -1
+var _region_refresh: float = 0.0
+
+
+static func clear_saved_area() -> void:
+	saved_area_world = PackedVector3Array()
 
 
 ## Pick a mode from what the runtime offers (pure, unit-tested).
@@ -207,6 +240,8 @@ func _enter_ar() -> void:
 	# board has to be placed again in this room.
 	placement.locked = false
 	flow.restart()
+	flow.has_saved_area = saved_area_world.size() >= 3
+	region = null
 	tracking_info = {}
 	xr_origin = XROrigin3D.new()
 	xr_origin.name = "XROrigin3D"
@@ -239,6 +274,11 @@ func _enter_ar() -> void:
 	hud.place_pressed.connect(func() -> void: place_at_reticle())
 	hud.place_in_front_pressed.connect(func() -> void: place_in_front())
 	hud.play_without_ar_pressed.connect(func() -> void: fall_back("Player chose to play without AR."))
+	hud.trace_pressed.connect(func() -> void: begin_trace())
+	hud.use_area_pressed.connect(func() -> void: use_saved_area())
+	hud.trace_done_pressed.connect(func() -> void: finish_trace())
+	hud.trace_clear_pressed.connect(clear_trace)
+	hud.trace_cancel_pressed.connect(cancel_trace)
 	hud.apply_flow(flow)
 	_sync_play()
 
@@ -263,6 +303,8 @@ func shutdown() -> void:
 
 func _teardown_ar() -> void:
 	front_follow = false
+	_clear_region()
+	clear_trace()
 	if anchors != null:
 		anchors.clear()
 	if bridge != null:
@@ -300,6 +342,10 @@ func place_at_reticle() -> bool:
 		return false
 	front_follow = false
 	flow.anchor_pending = false
+	placement.offset = Vector3.ZERO
+	placement.magnify = 1.0
+	_set_region(select_plane_region(anchors.pose.origin))
+	_fit_into_region()
 	_after_placed()
 	return true
 
@@ -320,6 +366,7 @@ func place_in_front() -> bool:
 		anchors.pose = AnchorService.upright(pose)
 		front_follow = true
 		flow.anchor_pending = true
+	_clear_region()
 	_after_placed()
 	return true
 
@@ -377,6 +424,9 @@ func begin_replace() -> void:
 	if not is_ar():
 		return
 	front_follow = false
+	_clear_region()
+	clear_trace()
+	flow.has_saved_area = saved_area_world.size() >= 3
 	anchors.clear()
 	phase = Phase.SEARCHING
 	placement.locked = false
@@ -391,6 +441,7 @@ func begin_replace() -> void:
 
 func recenter() -> void:
 	placement.recenter()
+	placement.offset = constrain_offset(placement.offset)
 	placement.save(placement_path)
 	_apply_transforms()
 
@@ -411,6 +462,8 @@ func _sync_play() -> void:
 	var locked: bool = is_board_locked()
 	if board_frame != null:
 		board_frame.visible = is_ar() and phase == Phase.PLACED and not locked
+	if _region_node != null:
+		_region_node.visible = is_ar() and phase == Phase.PLACED and not locked
 	if locked != _last_locked:
 		_last_locked = locked
 		board_lock_changed.emit(locked)
@@ -451,8 +504,17 @@ func _process(delta: float) -> void:
 		tracking_info = bridge.diagnostics()
 		if hud != null:
 			var forced: bool = bool(tracking_info.get("debuggable", false)) or flow.offers_fallback() or front_follow
-			hud.set_debug_text(CalibrationFlow.debug_line(tracking_info), forced)
+			var line: String = CalibrationFlow.debug_line(tracking_info) + debug_suffix()
+			hud.set_debug_text(line, forced)
 	if phase != Phase.PLACED:
+		if flow.step == CalibrationFlow.Step.TRACING:
+			reticle.visible = false
+			flow.update(delta, tracking_info, true)
+			if refresh:
+				_update_overlay()
+			if hud != null:
+				hud.apply_flow(flow)
+			return
 		var found: bool = _update_reticle()
 		flow.update(delta, tracking_info, found)
 		if refresh:
@@ -466,6 +528,13 @@ func _process(delta: float) -> void:
 	else:
 		anchors.poll()
 		_apply_transforms()
+	if region != null and region.source == SurfaceRegion.Source.PLANE and not placement.locked:
+		_region_refresh += delta
+		if _region_refresh >= 1.0:
+			_region_refresh = 0.0
+			var grown: SurfaceRegion = select_plane_region(anchors.pose.origin)
+			if grown != null:
+				_set_region(grown)
 
 
 func _poll_camera_permission(delta: float) -> void:
@@ -600,6 +669,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed and hud != null:
 		if hud.is_over_ui((event as InputEventScreenTouch).position):
 			return
+	if flow.step == CalibrationFlow.Step.TRACING:
+		_trace_input(event)
+		return
 	var gesture: Dictionary = gestures.handle(event)
 	if phase != Phase.PLACED:
 		if gesture.get("kind", &"") == &"tap" and phase == Phase.READY:
@@ -611,30 +683,411 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	match gesture.get("kind", &"") as StringName:
 		&"drag":
-			var before: Variant = _anchor_point(gesture["from"] as Vector2)
-			var after: Variant = _anchor_point(gesture["to"] as Vector2)
-			if before != null and after != null:
-				_adjusting = placement.drag((after as Vector3) - (before as Vector3))
+			_adjusting = drag_board(gesture["from"] as Vector2, gesture["to"] as Vector2)
 		&"pinch":
-			placement.pinch(float(gesture["scale"]))
 			# Screen clockwise twist turns the table clockwise seen from above.
-			placement.twist(-float(gesture["twist"]))
+			resize_board(float(gesture["scale"]), -float(gesture["twist"]))
 			_adjusting = true
 	if _adjusting and gestures.touch_count() == 0:
 		_adjusting = false
 		placement.save(placement_path)
 
 
-## Screen point -> point on the anchor's ground plane, in anchor space.
+## Screen point -> point on the anchor's own (selected) surface plane, in
+## anchor space. Never re-hit-tests other planes, so a drag cannot jump to
+## the floor; flat rays near the horizon are ignored.
 func _anchor_point(screen: Vector2) -> Variant:
 	var camera: Camera3D = get_viewport().get_camera_3d()
 	if camera == null or world_anchor == null:
 		return null
-	var ground := Plane(world_anchor.global_transform.basis.y.normalized(), world_anchor.global_position)
-	var hit: Variant = ground.intersects_ray(camera.project_ray_origin(screen), camera.project_ray_normal(screen))
-	if hit == null:
+	var up: Vector3 = world_anchor.global_transform.basis.y.normalized()
+	var origin: Vector3 = camera.project_ray_origin(screen)
+	var direction: Vector3 = camera.project_ray_normal(screen)
+	if absf(direction.dot(up)) < MIN_RAY_ELEVATION:
+		return null
+	var ground := Plane(up, world_anchor.global_position)
+	var hit: Variant = ground.intersects_ray(origin, direction)
+	if hit == null or origin.distance_to(hit as Vector3) > MAX_RAY_DISTANCE:
 		return null
 	return world_anchor.to_local(hit as Vector3)
+
+
+## Move the unlocked board by a screen drag, on its own surface, kept inside
+## the play area. Returns true if it moved.
+func drag_board(from_screen: Vector2, to_screen: Vector2) -> bool:
+	if placement.locked:
+		return false
+	var before: Variant = _anchor_point(from_screen)
+	var after: Variant = _anchor_point(to_screen)
+	if before == null or after == null:
+		return false
+	var delta: Vector3 = ((after as Vector3) - (before as Vector3)) / placement.magnify
+	delta.y = 0.0
+	if delta.length() > MAX_DRAG_STEP:
+		delta = delta.normalized() * MAX_DRAG_STEP
+	var target: Vector3 = constrain_offset(placement.offset + delta)
+	if target.is_equal_approx(placement.offset):
+		return false
+	placement.offset = target
+	return true
+
+
+## Pinch / twist the unlocked board; refused if it would not fit the area.
+func resize_board(factor: float, delta_yaw: float) -> bool:
+	if placement.locked or factor <= 0.0:
+		return false
+	var scale: float = clampf(placement.scale * factor, BoardPlacement.MIN_SCALE, BoardPlacement.MAX_SCALE)
+	var yaw: float = wrapf(placement.yaw + delta_yaw, -PI, PI)
+	if region == null or not region.is_valid():
+		placement.scale = scale
+		placement.yaw = yaw
+		return true
+	var center: Variant = region.clamp_center(Vector2(placement.offset.x, placement.offset.z), board_size * 0.5 * scale, yaw)
+	if center == null:
+		# Too big for the area at this angle: try just the rotation.
+		center = region.clamp_center(Vector2(placement.offset.x, placement.offset.z), board_size * 0.5 * placement.scale, yaw)
+		if center == null:
+			return false
+		scale = placement.scale
+	placement.scale = scale
+	placement.yaw = yaw
+	placement.offset = Vector3((center as Vector2).x, 0.0, (center as Vector2).y)
+	return true
+
+
+## The nearest anchor-space offset where the whole footprint stays inside
+## the play area (unchanged if there is no area, or nothing fits).
+func constrain_offset(proposed: Vector3) -> Vector3:
+	if region == null or not region.is_valid():
+		return Vector3(proposed.x, 0.0, proposed.z)
+	var half: Vector2 = board_size * 0.5 * placement.scale
+	var current := Vector2(placement.offset.x, placement.offset.z)
+	var center: Variant = region.clamp_center(Vector2(proposed.x, proposed.z), half, placement.yaw, current)
+	if center == null:
+		return placement.offset
+	return Vector3((center as Vector2).x, 0.0, (center as Vector2).y)
+
+
+# --- Play area: selected plane / traced outline ------------------------------------
+
+## Normalized-screen hit test for a screen position (viewport coordinates).
+func hit_at(screen: Vector2) -> Dictionary:
+	if bridge == null:
+		return {"hit": false}
+	var size: Vector2 = get_viewport().get_visible_rect().size
+	return bridge.hit_test(Vector2(screen.x / maxf(1.0, size.x), screen.y / maxf(1.0, size.y)))
+
+
+## The tracked plane under `origin_point` (XROrigin3D space) at its height,
+## as a SurfaceRegion in the current anchor's space; null if none matches.
+func select_plane_region(origin_point: Vector3) -> SurfaceRegion:
+	if bridge == null:
+		return null
+	var best: Dictionary = {}
+	var best_gap: float = INF
+	for entry: Variant in bridge.horizontal_planes():
+		var plane: Dictionary = entry as Dictionary
+		var pose: Transform3D = plane.get("pose", Transform3D.IDENTITY) as Transform3D
+		var polygon: PackedVector2Array = plane.get("polygon", PackedVector2Array()) as PackedVector2Array
+		var gap: float = absf(pose.origin.y - origin_point.y)
+		if polygon.size() < 3 or gap > PLANE_HEIGHT_TOLERANCE:
+			continue
+		var local: Vector3 = pose.affine_inverse() * origin_point
+		if not Geometry2D.is_point_in_polygon(Vector2(local.x, local.z), polygon):
+			continue
+		if gap < best_gap:
+			best_gap = gap
+			best = plane
+	if best.is_empty():
+		return null
+	var to_anchor: Transform3D = anchors.pose.affine_inverse() * (best["pose"] as Transform3D)
+	var points := PackedVector2Array()
+	for p: Vector2 in best["polygon"] as PackedVector2Array:
+		var a: Vector3 = to_anchor * Vector3(p.x, 0.0, p.y)
+		points.append(Vector2(a.x, a.z))
+	return SurfaceRegion.make(points, SurfaceRegion.Source.PLANE)
+
+
+## Keep the just-placed board inside the region: slide it in, or shrink it
+## (never below MIN_SCALE). Gives up on the region if nothing fits.
+func _fit_into_region() -> void:
+	if region == null or not region.is_valid():
+		return
+	var center: Variant = region.clamp_center(Vector2.ZERO, board_size * 0.5 * placement.scale, placement.yaw)
+	if center == null:
+		var fit: Dictionary = region.fit_board(board_size, BoardPlacement.MIN_SCALE, placement.scale)
+		if fit.is_empty():
+			_clear_region()
+			return
+		placement.scale = float(fit["scale"])
+		placement.yaw = float(fit["yaw"])
+		center = fit["center"]
+	placement.offset = Vector3((center as Vector2).x, 0.0, (center as Vector2).y)
+
+
+func _set_region(p_region: SurfaceRegion) -> void:
+	region = p_region
+	if _region_node != null:
+		_region_node.queue_free()
+		_region_node = null
+	if region == null or world_anchor == null:
+		return
+	_region_node = MeshInstance3D.new()
+	_region_node.name = "PlayArea"
+	_region_node.mesh = SurfaceRegion.outline_mesh(region.polygon, true, 0.01 if region.source == SurfaceRegion.Source.TRACED else 0.006)
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.albedo_color = Color(1.0, 0.85, 0.3, 0.95) if region.source == SurfaceRegion.Source.TRACED else Color(0.35, 0.95, 1.0, 0.6)
+	_region_node.material_override = material
+	world_anchor.add_child(_region_node)
+	_region_node.visible = is_ar() and phase == Phase.PLACED and not placement.locked
+
+
+func _clear_region() -> void:
+	_set_region(null)
+
+
+## "Trace play area": draw around the area with one finger.
+func begin_trace() -> bool:
+	if not is_ar() or phase == Phase.PLACED or not flow.begin_trace():
+		return false
+	clear_trace()
+	reticle.visible = false
+	if hud != null:
+		hud.apply_flow(flow)
+	return true
+
+
+func cancel_trace() -> void:
+	clear_trace()
+	flow.cancel_trace()
+	if hud != null:
+		hud.apply_flow(flow)
+
+
+func clear_trace() -> void:
+	_trace_points = PackedVector3Array()
+	_trace_touch = -1
+	flow.trace_points = 0
+	if _trace_node != null:
+		_trace_node.queue_free()
+		_trace_node = null
+	if hud != null:
+		hud.apply_flow(flow)
+
+
+func trace_point_count() -> int:
+	return _trace_points.size()
+
+
+## Begin (or continue) the outline at a screen point. The first point must
+## land on a detected surface; it fixes the traced height.
+func trace_begin(screen: Vector2) -> bool:
+	if flow.step != CalibrationFlow.Step.TRACING:
+		return false
+	if _trace_points.is_empty():
+		var hit: Dictionary = hit_at(screen)
+		if not bool(hit.get("hit", false)):
+			flow.trace_error = "Start your outline on the surface (where the teal area is)."
+			if hud != null:
+				hud.apply_flow(flow)
+			return false
+		_trace_height = (hit["pose"] as Transform3D).origin.y
+		flow.trace_error = ""
+	return trace_add(screen)
+
+
+## Add a stroke point: the finger's ray meets the traced surface's own height
+## (an infinite plane), so tracing past a real edge never drops to the floor.
+## Points over a clearly higher surface (an object on the area) are rejected.
+func trace_add(screen: Vector2) -> bool:
+	var point: Variant = _project_to_height(screen, _trace_height)
+	if point == null:
+		return false
+	var p: Vector3 = point as Vector3
+	var hit: Dictionary = hit_at(screen)
+	if bool(hit.get("hit", false)) and (hit["pose"] as Transform3D).origin.y - _trace_height > TRACE_HEIGHT_TOLERANCE:
+		return false
+	if not _trace_points.is_empty():
+		if Vector2(p.x, p.z).distance_to(Vector2(_trace_points[0].x, _trace_points[0].z)) > TRACE_MAX_RADIUS:
+			return false
+		var last: Vector3 = _trace_points[_trace_points.size() - 1]
+		if Vector2(p.x, p.z).distance_to(Vector2(last.x, last.z)) < TRACE_MIN_SPACING:
+			return false
+	_trace_points.append(p)
+	flow.trace_points = _trace_points.size()
+	_update_trace_preview()
+	return true
+
+
+## Finger lifted: close the outline if it came back near its start.
+## Returns true if the board was placed.
+func trace_end() -> bool:
+	if _trace_points.size() < 3:
+		if hud != null:
+			hud.apply_flow(flow)
+		return false
+	var first := Vector2(_trace_points[0].x, _trace_points[0].z)
+	var last := Vector2(_trace_points[_trace_points.size() - 1].x, _trace_points[_trace_points.size() - 1].z)
+	var lo := first
+	var hi := first
+	for p: Vector3 in _trace_points:
+		lo = Vector2(minf(lo.x, p.x), minf(lo.y, p.z))
+		hi = Vector2(maxf(hi.x, p.x), maxf(hi.y, p.z))
+	if first.distance_to(last) <= maxf(0.08, (hi - lo).length() * 0.25):
+		return finish_trace()
+	if hud != null:
+		hud.apply_flow(flow)
+		hud.set_status("Keep drawing to close the outline, or tap Done.")
+	return false
+
+
+## Close the traced outline, anchor the board on it and auto-fit the board.
+func finish_trace() -> bool:
+	if flow.step != CalibrationFlow.Step.TRACING:
+		return false
+	var flat := PackedVector2Array()
+	for p: Vector3 in _trace_points:
+		flat.append(Vector2(p.x, p.z))
+	var outline: PackedVector2Array = SurfaceRegion.clean_outline(flat)
+	if outline.is_empty():
+		_trace_failed("That outline was too small or unclear. Draw all the way around the area.")
+		return false
+	var world := PackedVector3Array()
+	for p: Vector2 in outline:
+		world.append(Vector3(p.x, _trace_height, p.y))
+	if not _place_on_outline(world):
+		return false
+	saved_area_world = world
+	flow.has_saved_area = true
+	return true
+
+
+## "Use traced area": reuse this session's last outline (e.g. another game).
+func use_saved_area() -> bool:
+	if not is_ar() or phase == Phase.PLACED or saved_area_world.size() < 3:
+		return false
+	return _place_on_outline(saved_area_world)
+
+
+func _trace_failed(reason: String) -> void:
+	clear_trace()
+	flow.trace_error = reason
+	if hud != null:
+		hud.apply_flow(flow)
+
+
+## Anchor the board on a closed outline (XROrigin3D space, one height) and
+## fit the biggest board that stays inside it.
+func _place_on_outline(world: PackedVector3Array) -> bool:
+	var flat := PackedVector2Array()
+	var height: float = 0.0
+	for p: Vector3 in world:
+		flat.append(Vector2(p.x, p.z))
+		height += p.y
+	height /= float(world.size())
+	var probe := SurfaceRegion.make(flat, SurfaceRegion.Source.TRACED)
+	var c: Vector2 = probe.centroid()
+	var forward := Vector3.FORWARD
+	if xr_camera != null:
+		var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
+		var cam: Vector3 = origin_xform.affine_inverse() * xr_camera.global_position
+		forward = Vector3(c.x - cam.x, 0.0, c.y - cam.z)
+		if forward.length() < 0.01:
+			forward = Vector3.FORWARD
+	var pose := Transform3D(Basis.looking_at(forward.normalized(), Vector3.UP), Vector3(c.x, height, c.y))
+	if not anchors.place_at_pose(pose):
+		_trace_failed("AR tracking is not steady yet. Hold still a moment and trace again.")
+		return false
+	var to_anchor: Transform3D = anchors.pose.affine_inverse()
+	var points := PackedVector2Array()
+	for p: Vector3 in world:
+		var a: Vector3 = to_anchor * p
+		points.append(Vector2(a.x, a.z))
+	var area := SurfaceRegion.make(points, SurfaceRegion.Source.TRACED)
+	var fit: Dictionary = area.fit_board(board_size, BoardPlacement.MIN_SCALE)
+	if fit.is_empty():
+		anchors.clear()
+		_trace_failed("That area is too small for this board. Trace a bigger area, or tap Cancel.")
+		return false
+	clear_trace()
+	front_follow = false
+	flow.anchor_pending = false
+	placement.offset = Vector3((fit["center"] as Vector2).x, 0.0, (fit["center"] as Vector2).y)
+	placement.yaw = float(fit["yaw"])
+	placement.scale = float(fit["scale"])
+	placement.magnify = 1.0
+	_set_region(area)
+	_after_placed()
+	return true
+
+
+## Ray from a screen point to the horizontal plane at `height` (XROrigin3D
+## space); null for flat or distant rays.
+func _project_to_height(screen: Vector2, height: float) -> Variant:
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera == null:
+		return null
+	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
+	var up: Vector3 = origin_xform.basis.y.normalized()
+	var origin: Vector3 = camera.project_ray_origin(screen)
+	var direction: Vector3 = camera.project_ray_normal(screen)
+	if absf(direction.dot(up)) < MIN_RAY_ELEVATION:
+		return null
+	var plane := Plane(up, origin_xform * Vector3(0.0, height, 0.0))
+	var hit: Variant = plane.intersects_ray(origin, direction)
+	if hit == null or origin.distance_to(hit as Vector3) > MAX_RAY_DISTANCE:
+		return null
+	return origin_xform.affine_inverse() * (hit as Vector3)
+
+
+func _trace_input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		var touch: InputEventScreenTouch = event
+		if touch.pressed and _trace_touch < 0:
+			if trace_begin(touch.position):
+				_trace_touch = touch.index
+			elif not _trace_points.is_empty():
+				_trace_touch = touch.index
+		elif not touch.pressed and touch.index == _trace_touch:
+			_trace_touch = -1
+			trace_end()
+	elif event is InputEventScreenDrag:
+		var drag: InputEventScreenDrag = event
+		if drag.index == _trace_touch:
+			trace_add(drag.position)
+		elif _trace_touch < 0 and _trace_points.is_empty() and trace_begin(drag.position):
+			_trace_touch = drag.index
+
+
+func _update_trace_preview() -> void:
+	if _trace_node == null:
+		_trace_node = MeshInstance3D.new()
+		_trace_node.name = "TraceStroke"
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		material.albedo_color = Color(1.0, 0.85, 0.3)
+		_trace_node.material_override = material
+		if xr_origin != null:
+			xr_origin.add_child(_trace_node)
+		else:
+			add_child(_trace_node)
+	var flat := PackedVector2Array()
+	for p: Vector3 in _trace_points:
+		flat.append(Vector2(p.x, p.z))
+	_trace_node.mesh = SurfaceRegion.outline_mesh(flat, false, 0.01, _trace_height + 0.003)
+
+
+func debug_suffix() -> String:
+	var parts: PackedStringArray = []
+	if region != null:
+		parts.append("area %s %.2fm²" % ["traced" if region.source == SurfaceRegion.Source.TRACED else "plane", region.area()])
+	if not extra_debug.is_empty():
+		parts.append(extra_debug)
+	return "" if parts.is_empty() else " · " + " · ".join(parts)
 
 
 func _on_anchor_tracking_changed(state: int) -> void:

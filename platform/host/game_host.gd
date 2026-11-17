@@ -42,6 +42,12 @@ var _back_button: Button
 var _status_label: Label
 var _dragging_board: bool = false
 var _exiting: bool = false
+var _tap_marker: MeshInstance3D
+var _tap_marker_time: float = 0.0
+## Tap diagnostics for the AR debug line: taps seen / taps on the board plane.
+var taps_seen: int = 0
+var taps_on_board: int = 0
+var last_tap_point: Variant = null
 
 
 func _ready() -> void:
@@ -68,10 +74,12 @@ func _ready() -> void:
 	session.bridge_factory = bridge_factory
 	session.board_frame = board_frame
 	session.placement_path = "user://lg_placement_%s.cfg" % manifest.id
+	session.board_size = manifest.board_size
 	session.board_lock_changed.connect(_on_board_lock_changed)
 	add_child(session)
 	session.setup(world_anchor, pivot, orbit_camera.camera, environment)
 	_on_board_lock_changed(session.is_board_locked())
+	_gestures.tap_slop_px = tap_slop_for_screen()
 
 
 func _load_game() -> bool:
@@ -161,7 +169,29 @@ func active_camera() -> Camera3D:
 	return orbit_camera.camera
 
 
-func _unhandled_input(event: InputEvent) -> void:
+## Tap slop in viewport pixels for this screen: about 3 mm of finger wobble
+## (phones have ~400+ dpi, and the viewport is scaled from 720p).
+func tap_slop_for_screen() -> float:
+	var dpi: float = float(DisplayServer.screen_get_dpi())
+	var window_height: float = float(DisplayServer.window_get_size().y)
+	var view_height: float = get_viewport().get_visible_rect().size.y
+	if dpi <= 0.0 or window_height <= 0.0 or view_height <= 0.0:
+		return GestureTracker.TAP_SLOP_PX
+	var physical_px: float = dpi * 0.12
+	return clampf(physical_px * view_height / window_height, GestureTracker.TAP_SLOP_PX, 64.0)
+
+
+## True if a screen point is on platform UI (back button, AR buttons, the
+## calibration banner), so the touch is not a board touch.
+func is_over_platform_ui(screen: Vector2) -> bool:
+	if _back_button != null and _back_button.visible and _back_button.get_global_rect().has_point(screen):
+		return true
+	return session != null and session.hud != null and session.hud.is_over_ui(screen)
+
+
+## Board input is read in _input (before the GUI) so no full-screen Control
+## can swallow phone touches; platform buttons are skipped explicitly.
+func _input(event: InputEvent) -> void:
 	if game == null or session == null:
 		return
 	if event is InputEventMouseButton and not session.is_ar():
@@ -173,6 +203,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not (event is InputEventScreenTouch or event is InputEventScreenDrag):
 		return
+	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
+		if is_over_platform_ui((event as InputEventScreenTouch).position):
+			return
 	var gesture: Dictionary = _gestures.handle(event)
 	if session.captures_touch() or gesture.is_empty():
 		return
@@ -185,9 +218,14 @@ func route_gesture(gesture: Dictionary) -> void:
 	match gesture.get("kind", &"") as StringName:
 		&"tap":
 			_dragging_board = false
+			taps_seen += 1
 			var point: Variant = screen_to_board(camera, game, gesture["position"] as Vector2)
+			last_tap_point = point
 			if point != null:
+				taps_on_board += 1
+				_show_tap_marker(point as Vector3)
 				game.lg_tap(point as Vector3)
+			_update_tap_debug()
 		&"drag":
 			if game.captures_drag() and game.is_playing():
 				var from: Variant = screen_to_board(camera, game, gesture["from"] as Vector2)
@@ -199,6 +237,47 @@ func route_gesture(gesture: Dictionary) -> void:
 		&"pinch":
 			if not session.is_ar():
 				orbit_camera.zoom(float(gesture["scale"]))
+
+
+func _process(delta: float) -> void:
+	if _tap_marker != null and _tap_marker.visible:
+		_tap_marker_time -= delta
+		var t: float = clampf(_tap_marker_time / 0.5, 0.0, 1.0)
+		_tap_marker.scale = Vector3.ONE * (1.6 - 0.6 * t)
+		(_tap_marker.material_override as StandardMaterial3D).albedo_color.a = t
+		if _tap_marker_time <= 0.0:
+			_tap_marker.visible = false
+
+
+## Brief ring where a tap met the board plane, so players see taps land.
+func _show_tap_marker(point: Vector3) -> void:
+	if _tap_marker == null:
+		_tap_marker = MeshInstance3D.new()
+		_tap_marker.name = "TapMarker"
+		var torus := TorusMesh.new()
+		torus.inner_radius = 0.012
+		torus.outer_radius = 0.016
+		_tap_marker.mesh = torus
+		var material := StandardMaterial3D.new()
+		material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		material.albedo_color = Color(1.0, 1.0, 1.0, 1.0)
+		material.no_depth_test = true
+		_tap_marker.material_override = material
+		game.add_sibling(_tap_marker)
+	_tap_marker.position = point + Vector3(0.0, 0.03, 0.0)
+	_tap_marker.visible = true
+	_tap_marker_time = 0.5
+
+
+func _update_tap_debug() -> void:
+	if session == null:
+		return
+	var where: String = "miss"
+	if last_tap_point is Vector3:
+		var p: Vector3 = last_tap_point as Vector3
+		where = "%.2f,%.2f" % [p.x, p.z]
+	session.extra_debug = "taps %d/%d last %s" % [taps_on_board, taps_seen, where]
 
 
 # --- Scene ------------------------------------------------------------------------
