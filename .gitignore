@@ -1,0 +1,18 @@
+# Godot 4+
+.godot/
+*.translation
+
+# Exports
+/android/
+/build/
+*.apk
+*.aab
+*.ipa
+
+# Packaged test builds
+*.zip
+
+# ARCore plugin build outputs (tools/arcore_plugin/build_arcore_plugin.sh)
+/addons/ARCorePlugin/bin/
+/addons/ARCorePlugin/plugin.gdextension
+/addons/ARCorePlugin/plugin.gdextension.uid

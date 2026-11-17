@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="LGGameManifest" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://platform/game/lg_game_manifest.gd" id="1_manifest"]
+[ext_resource type="Texture2D" path="res://games/tic_tac_toe/icon.svg" id="2_icon"]
+
+[resource]
+script = ExtResource("1_manifest")
+id = &"tic_tac_toe"
+display_name = "Tic-Tac-Toe"
+description = "Sample game. Two players take turns on one phone: tap a tile to place X or O. Proves the board contract end to end."
+icon = ExtResource("2_icon")
+min_players = 1
+max_players = 2
+board_size = Vector2(0.3, 0.3)
+board_height = 0.12
+entry = "res://games/tic_tac_toe/tic_tac_toe.tscn"
+version = "0.1.0"
+author = "Looking Glass"
+tags = PackedStringArray("sample", "classic")

@@ -1,0 +1,248 @@
+class_name ARCoreBridge
+extends RefCounted
+## Thin, fully dynamic wrapper around the GodotVR ARCore plugin, patched with
+## plane hit tests and anchors (see tools/arcore_plugin/). Nothing here names a
+## plugin class statically, so the project parses and runs on desktop and
+## headless where the Android-only GDExtension is absent.
+
+const PLUGIN_SINGLETON: String = "ARCorePlugin"
+const INTERFACE_CLASS: String = "ARCoreInterface"
+const INTERFACE_NAME: StringName = &"ARCore"
+const CAMERA_PERMISSION: String = "android.permission.CAMERA"
+## Methods added by tools/arcore_plugin/lg-arcore.patch. An unpatched
+## upstream build lacks them, and AR then falls back to the touch camera.
+const REQUIRED_METHODS: PackedStringArray = [
+	"hit_test_plane",
+	"create_anchor_at_screen",
+	"create_anchor",
+	"get_anchor_pose",
+	"get_anchor_tracking_state",
+	"remove_anchor",
+]
+
+## Every ARCoreInterface this app creates stays referenced here for the
+## process lifetime. The plugin's native destructor crashes (SIGSEGV) when the
+## object is freed, e.g. after a failed initialize(), so it must never be freed.
+static var _keep_alive: Array[XRInterface] = []
+## The one ARCore session of this process, shared by every game the launcher
+## runs (see acquire() / release()). Re-creating the plugin interface per game
+## is not safe, so a session is paused between games instead of destroyed.
+static var _shared: ARCoreBridge
+
+var interface: XRInterface
+var failure_reason: String = ""
+var _plugin: Object
+var _added_interface: bool = false
+var _viewport: Viewport
+var _arcore_version: String = ""
+var _debuggable: int = -1
+
+
+## True when the app may use the camera. ARCore cannot create a session
+## without it, so AR waits for the grant instead of failing at launch.
+static func camera_permission_granted() -> bool:
+	if not OS.has_feature("android"):
+		return true
+	return CAMERA_PERMISSION in OS.get_granted_permissions()
+
+
+## True when the Android plugin singleton and the GDExtension class exist.
+static func plugin_present() -> bool:
+	return Engine.has_singleton(PLUGIN_SINGLETON) and ClassDB.class_exists(INTERFACE_CLASS)
+
+
+## The process-wide session: started on first use, resumed on later uses.
+## Returns null (with the reason in `out_reason[0]`) if AR cannot run.
+static func acquire(viewport: Viewport, out_reason: Array = []) -> ARCoreBridge:
+	if _shared != null and _shared.is_running():
+		_shared.resume()
+		viewport.use_xr = true
+		_shared._viewport = viewport
+		return _shared
+	var bridge := ARCoreBridge.new()
+	if bridge.start(viewport):
+		_shared = bridge
+		return bridge
+	out_reason.append(bridge.failure_reason)
+	return null
+
+
+## Hand the session back when a game closes: pause the camera and stop XR
+## rendering, but keep the session alive for the next game.
+func release(viewport: Viewport) -> void:
+	remove_all_anchors()
+	pause()
+	if viewport != null:
+		viewport.use_xr = false
+
+
+func remove_all_anchors() -> void:
+	if interface != null and interface.has_method("remove_all_anchors"):
+		interface.call("remove_all_anchors")
+
+
+## Start an ARCore session and switch `viewport` to XR rendering.
+## Returns false (with `failure_reason`) when AR cannot run on this device.
+func start(viewport: Viewport) -> bool:
+	if not plugin_present():
+		failure_reason = "ARCore plugin is not in this build."
+		return false
+	_plugin = Engine.get_singleton(PLUGIN_SINGLETON)
+	interface = XRServer.find_interface(INTERFACE_NAME)
+	if interface == null:
+		interface = ClassDB.instantiate(INTERFACE_CLASS) as XRInterface
+		if interface == null:
+			failure_reason = "Could not create the ARCore interface."
+			return false
+		_keep_alive.append(interface)
+		XRServer.add_interface(interface)
+		_added_interface = true
+	for method: String in REQUIRED_METHODS:
+		if not interface.has_method(method):
+			failure_reason = "ARCore plugin lacks %s (unpatched build)." % method
+			return false
+	_plugin.call("initializeEnvironment")
+	# initialize() must come before any enable_* call: the plugin's setters
+	# reconfigure the ArSession without checking it exists, so enabling plane
+	# detection first dereferences a null session (native SIGSEGV at launch).
+	if not interface.initialize():
+		failure_reason = "ARCore did not start (unsupported device, ARCore not installed, or camera permission denied)."
+		if _added_interface:
+			XRServer.remove_interface(interface)
+			_added_interface = false
+		interface = null
+		return false
+	interface.call("enable_horizontal_plane_detection", true)
+	if interface.has_method("set_plane_rendering"):
+		# The platform draws its own surface overlay during calibration.
+		interface.call("set_plane_rendering", false)
+	# The plugin makes itself primary in initialize(); make sure, since the
+	# XR camera only follows the primary interface.
+	if XRServer.primary_interface != interface:
+		XRServer.primary_interface = interface
+	viewport.use_xr = true
+	_viewport = viewport
+	return true
+
+
+## The plugin never hooks Android pause/resume itself, so the session keeps
+## running against a camera Android has taken away. Forward the app lifecycle.
+func pause() -> void:
+	if is_running() and interface.has_method("_pause"):
+		interface.call("_pause")
+
+
+func resume() -> void:
+	if is_running() and interface.has_method("_resume"):
+		interface.call("_resume")
+
+
+## Camera tracking diagnostics from the plugin (empty for unpatched builds):
+## camera_state (0 tracking, 1 paused, 2 stopped), failure_reason, frames,
+## update_errors, planes, upward_planes, points.
+func tracking_info() -> Dictionary:
+	if not is_running() or not interface.has_method("get_tracking_info"):
+		return {}
+	return interface.call("get_tracking_info") as Dictionary
+
+
+## tracking_info() plus app-level checks for the on-screen debug line:
+## is_primary, use_xr, arcore_version, debuggable.
+func diagnostics() -> Dictionary:
+	var out: Dictionary = tracking_info().duplicate()
+	out["is_primary"] = interface != null and XRServer.primary_interface == interface
+	out["use_xr"] = _viewport != null and _viewport.use_xr
+	if _plugin != null:
+		# Plugin singletons (JNISingleton) do not report Java methods through
+		# has_method(), so call directly; an older plugin just returns null.
+		if _arcore_version.is_empty():
+			var version: Variant = _plugin.call("getArCoreVersion")
+			_arcore_version = "?" if version == null else str(version)
+		if _debuggable < 0:
+			var debuggable: Variant = _plugin.call("isAppDebuggable")
+			_debuggable = (1 if bool(debuggable) else 0) if debuggable != null else (1 if OS.is_debug_build() else 0)
+	if not _arcore_version.is_empty():
+		out["arcore_version"] = _arcore_version
+	out["debuggable"] = _debuggable == 1 if _debuggable >= 0 else OS.is_debug_build()
+	return out
+
+
+## Tracked upward-facing planes: [{pose: Transform3D, polygon: PackedVector2Array}].
+func horizontal_planes() -> Array:
+	if not is_running() or not interface.has_method("get_horizontal_planes"):
+		return []
+	return interface.call("get_horizontal_planes") as Array
+
+
+## Up to `max_points` current feature points in Godot world space.
+func point_cloud(max_points: int) -> PackedVector3Array:
+	if not is_running() or not interface.has_method("get_point_cloud"):
+		return PackedVector3Array()
+	return interface.call("get_point_cloud", max_points) as PackedVector3Array
+
+
+func stop(viewport: Viewport) -> void:
+	if viewport != null:
+		viewport.use_xr = false
+	if interface != null:
+		if interface.has_method("remove_all_anchors"):
+			interface.call("remove_all_anchors")
+		if interface.is_initialized():
+			interface.uninitialize()
+		if _added_interface:
+			XRServer.remove_interface(interface)
+	if _plugin != null:
+		_plugin.call("uninitializeEnvironment")
+	interface = null
+	_plugin = null
+
+
+func is_running() -> bool:
+	return interface != null and interface.is_initialized()
+
+
+## XRInterface.TrackingStatus of the device camera.
+func tracking_status() -> int:
+	if interface == null:
+		return XRInterface.XR_UNKNOWN_TRACKING
+	return int(interface.get_tracking_status())
+
+
+## Nearest tracked upward-facing plane under a normalized screen point.
+## Returns {"hit": bool, "pose": Transform3D (Godot world)}.
+func hit_test(normalized_screen: Vector2) -> Dictionary:
+	if not is_running():
+		return {"hit": false}
+	return interface.call("hit_test_plane", normalized_screen.x, normalized_screen.y) as Dictionary
+
+
+## Anchor attached to the plane under a normalized screen point.
+## Returns {"id": int (-1 on failure), "pose": Transform3D}.
+func create_anchor_at_screen(normalized_screen: Vector2) -> Dictionary:
+	if not is_running():
+		return {"id": -1}
+	return interface.call("create_anchor_at_screen", normalized_screen.x, normalized_screen.y) as Dictionary
+
+
+func create_anchor(pose: Transform3D) -> int:
+	if not is_running():
+		return -1
+	return int(interface.call("create_anchor", pose))
+
+
+func get_anchor_pose(anchor_id: int) -> Transform3D:
+	if interface == null:
+		return Transform3D.IDENTITY
+	return interface.call("get_anchor_pose", anchor_id) as Transform3D
+
+
+## 0 tracking, 1 paused, 2 stopped, -1 unknown.
+func get_anchor_tracking_state(anchor_id: int) -> int:
+	if interface == null:
+		return -1
+	return int(interface.call("get_anchor_tracking_state", anchor_id))
+
+
+func remove_anchor(anchor_id: int) -> void:
+	if interface != null:
+		interface.call("remove_anchor", anchor_id)

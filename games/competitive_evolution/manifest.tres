@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="LGGameManifest" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://platform/game/lg_game_manifest.gd" id="1_manifest"]
+[ext_resource type="Texture2D" path="res://games/competitive_evolution/icon.svg" id="2_icon"]
+
+[resource]
+script = ExtResource("1_manifest")
+id = &"competitive_evolution"
+display_name = "Competitive Evolution"
+description = "Species evolution RTS on a tabletop globe. On hiatus: this is a placeholder board until the AGR game is imported."
+icon = ExtResource("2_icon")
+min_players = 1
+max_players = 4
+board_size = Vector2(0.42, 0.42)
+board_height = 0.42
+entry = "res://games/competitive_evolution/competitive_evolution.tscn"
+version = "0.0.1-placeholder"
+author = "Looking Glass"
+tags = PackedStringArray("strategy", "placeholder")
