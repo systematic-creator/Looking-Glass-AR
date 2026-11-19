@@ -25,6 +25,7 @@ const ROBE_DARK := Color(0.12, 0.2, 0.55)
 const HAT := Color(0.1, 0.15, 0.45)
 const SKIN := Color(0.96, 0.8, 0.66)
 const BEARD := Color(0.96, 0.96, 0.96)
+const BARRIER_RED := Color(0.82, 0.18, 0.14)
 
 
 ## Collects coloured, flat-shaded triangles.
@@ -134,28 +135,56 @@ class Builder:
 		return verts.size() / 3
 
 
-static var _solid: StandardMaterial3D
-static var _glow: StandardMaterial3D
+static var _solid: ShaderMaterial
+static var _glow: ShaderMaterial
+## Every material that clips at the road's cut (set_cut updates them all).
+static var _cut_materials: Array[ShaderMaterial] = []
+static var cut_near := Plane(Vector3(0, 0, 1), 1.0e6)
+static var cut_far := Plane(Vector3(0, 0, -1), 1.0e6)
+
+const SOLID_SHADER: Shader = preload("res://games/mage_run/shaders/solid_cut.gdshader")
+const GLOW_SHADER: Shader = preload("res://games/mage_run/shaders/glow_cut.gdshader")
 
 
-## The shared solid material: vertex colours, softly lit, double-sided.
-static func solid_material() -> StandardMaterial3D:
+## A material on `shader` that clips at the road's cut (registered for set_cut).
+static func cut_material(shader: Shader) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = shader
+	_cut_materials.append(m)
+	_apply_cut(m)
+	return m
+
+
+## Move the cut planes (world space; a point p is cut away where
+## plane.is_point_over(p)). Called every frame by MageRunGame.
+static func set_cut(near: Plane, far: Plane) -> void:
+	cut_near = near
+	cut_far = far
+	for m: ShaderMaterial in _cut_materials:
+		_apply_cut(m)
+
+
+static func _apply_cut(m: ShaderMaterial) -> void:
+	m.set_shader_parameter("cut_near", Vector4(cut_near.normal.x, cut_near.normal.y, cut_near.normal.z, cut_near.d))
+	m.set_shader_parameter("cut_far", Vector4(cut_far.normal.x, cut_far.normal.y, cut_far.normal.z, cut_far.d))
+
+
+static func cut_materials() -> Array[ShaderMaterial]:
+	return _cut_materials
+
+
+## The shared solid material: vertex colours, softly lit, double-sided,
+## clipped at the road's cut.
+static func solid_material() -> ShaderMaterial:
 	if _solid == null:
-		_solid = StandardMaterial3D.new()
-		_solid.vertex_color_use_as_albedo = true
-		_solid.roughness = 0.85
-		_solid.cull_mode = BaseMaterial3D.CULL_DISABLED
-		_solid.specular_mode = BaseMaterial3D.SPECULAR_SCHLICK_GGX
+		_solid = cut_material(SOLID_SHADER)
 	return _solid
 
 
-## Unshaded vertex-colour glow (staff tip, crystals, coins' sparkle).
-static func glow_material() -> StandardMaterial3D:
+## Unshaded vertex-colour glow (staff tip, crystals), clipped at the cut.
+static func glow_material() -> ShaderMaterial:
 	if _glow == null:
-		_glow = StandardMaterial3D.new()
-		_glow.vertex_color_use_as_albedo = true
-		_glow.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		_glow.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_glow = cut_material(GLOW_SHADER)
 	return _glow
 
 
@@ -190,6 +219,74 @@ static func beam(depth: float) -> ArrayMesh:
 	for side: float in [-1.0, 1.0]:
 		b.tri(Vector3(side * w * 0.36, bottom, 0.0), Vector3(side * w * 0.12, bottom, 0.0), Vector3(side * w * 0.24, bottom - 0.007, 0.0), ROYAL_BLUE.darkened(0.15))
 	b.star(Vector3(0, (top + bottom) * 0.5 + 0.004, 0.0015), 0.009, 0.004, 0.0015, GOLD)
+	return b.commit()
+
+
+## A fallen log across one lane, bark and pale cut ends (JUMP it). Low and
+## solid to the ground, like the fence.
+static func log_mesh(depth: float) -> ArrayMesh:
+	var b := Builder.new()
+	var w: float = MageTrack.LANE_PITCH * 0.86
+	var r: float = MageTrack.LOG_TOP * 0.5
+	var rz: float = minf(r, depth * 0.5)
+	b.cylinder(Vector3(-w * 0.5, r, 0.0), Vector3.RIGHT, w, rz, rz, 9, WOOD_DARK, true, WOOD_LIGHT)
+	# Bark ridges and a stub branch.
+	for i: int in 3:
+		var x: float = -w * 0.3 + w * 0.3 * float(i)
+		b.cylinder(Vector3(x, r, 0.0), Vector3.RIGHT, 0.004, rz * 1.06, rz * 1.06, 9, WOOD_DARK.darkened(0.2), false)
+	b.cylinder(Vector3(w * 0.18, r * 1.6, 0.0), Vector3(0.4, 1.0, 0.0), 0.008, 0.003, 0.0015, 5, WOOD_DARK)
+	b.sphere(Vector3(-w * 0.25, r * 1.85, 0.0), 0.004, MOSS, 2, 5)
+	return b.commit()
+
+
+## A red-and-white striped barrier plank on two legs with a clear gap
+## underneath (EITHER: jump over it or slide under it).
+static func barrier(depth: float) -> ArrayMesh:
+	var b := Builder.new()
+	var w: float = MageTrack.LANE_PITCH * 0.88
+	var d: float = clampf(depth * 0.5, 0.004, 0.008)
+	var lo: float = MageTrack.BARRIER_BASE
+	var hi: float = MageTrack.BARRIER_TOP
+	# A-frame legs at the lane edges (outside the wizard's body).
+	for side: float in [-1.0, 1.0]:
+		var x: float = side * (w * 0.5 - 0.003)
+		b.box(Vector3(x, hi * 0.5, -d * 0.8), Vector3(0.005, hi, 0.004), WOOD_DARK, Basis(Vector3.RIGHT, 0.25))
+		b.box(Vector3(x, hi * 0.5, d * 0.8), Vector3(0.005, hi, 0.004), WOOD_DARK, Basis(Vector3.RIGHT, -0.25))
+		b.box(Vector3(x, 0.002, 0.0), Vector3(0.007, 0.004, d * 3.0), IRON)
+	# The striped plank (red / white diagonal blocks) and a lantern.
+	var stripes: int = 6
+	var sw: float = w / float(stripes)
+	for i: int in stripes:
+		var col: Color = BARRIER_RED if i % 2 == 0 else WHITE
+		b.box(Vector3(-w * 0.5 + sw * (float(i) + 0.5), (lo + hi) * 0.5, 0.0), Vector3(sw * 1.01, hi - lo, d), col)
+	b.box(Vector3(0, hi + 0.0015, 0.0), Vector3(w * 1.02, 0.003, d * 1.1), WOOD_DARK)
+	b.sphere(Vector3(0, hi + 0.006, 0.0), 0.004, GOLD.lightened(0.2), 2, 6)
+	return b.commit()
+
+
+## A tall stone wall block with battlements (DODGE: too high to jump, nothing
+## to slide under).
+static func wall(depth: float) -> ArrayMesh:
+	var b := Builder.new()
+	var w: float = MageTrack.LANE_PITCH * 0.9
+	var top: float = MageTrack.WALL_TOP
+	var h: float = top - 0.012
+	b.box(Vector3(0, h * 0.5, 0), Vector3(w, h, depth), STONE, Basis(), STONE.lightened(0.05))
+	# Mortar courses and offset stones on the faces.
+	var courses: int = 5
+	for c: int in courses:
+		var y: float = h * (float(c) + 0.5) / float(courses)
+		b.box(Vector3(0, y + h / float(courses) * 0.5, 0), Vector3(w * 1.01, 0.0012, depth * 1.01), STONE_DARK)
+		var off: float = 0.25 if c % 2 == 0 else -0.25
+		b.box(Vector3(w * off * 0.5, y, 0), Vector3(0.0012, h / float(courses) * 0.9, depth * 1.012), STONE_DARK)
+	# Battlements.
+	for i: int in 3:
+		var x: float = -w * 0.36 + w * 0.36 * float(i)
+		b.box(Vector3(x, h + 0.006, 0), Vector3(w * 0.2, 0.012, depth * 0.9), STONE, Basis(), STONE.lightened(0.08))
+	# A blue banner hanging on the front face.
+	b.box(Vector3(0, h * 0.62, depth * 0.5 + 0.0012), Vector3(w * 0.34, h * 0.5, 0.0015), ROYAL_BLUE)
+	b.star(Vector3(0, h * 0.7, depth * 0.5 + 0.0025), 0.007, 0.003, 0.001, GOLD)
+	b.box(Vector3(0, h * 0.62, -depth * 0.5 - 0.0012), Vector3(w * 0.34, h * 0.5, 0.0015), ROYAL_BLUE)
 	return b.commit()
 
 
@@ -238,7 +335,7 @@ static func cart(depth: float) -> ArrayMesh:
 			b.cylinder(Vector3(sx * w * 0.52, 0.009, depth * sz), Vector3(sx, 0, 0), 0.004, 0.009, 0.009, 8, IRON)
 	# Barrels standing in the cart, up to CART_TOP.
 	var bh: float = MageTrack.CART_TOP - (body_bottom + body_h * 0.6)
-	var n: int = maxi(2, roundi(depth / 0.03))
+	var n: int = clampi(roundi(depth / 0.03), 2, 3)
 	for i: int in n:
 		var z: float = -depth * 0.42 + depth * 0.84 * (float(i) + 0.5) / float(n)
 		for sx: float in [-0.22, 0.22]:
@@ -279,58 +376,6 @@ static func carriage(depth: float) -> ArrayMesh:
 
 # --- Scenery ------------------------------------------------------------------------
 
-## The castle gatehouse at the far end: walls, two towers with blue-slate
-## roofs, battlements; the gate opening itself is the portal (separate).
-## Spans x +-0.15, z from FAR_Z to GATE_Z, y 0..~0.375.
-static func castle() -> ArrayMesh:
-	var b := Builder.new()
-	var z0: float = MageTrack.FAR_Z + 0.002
-	var z1: float = MageTrack.GATE_Z
-	var depth: float = z1 - z0
-	var zc: float = (z0 + z1) * 0.5
-	var wall_h: float = 0.255
-	var half_w: float = 0.13
-	var gate_w: float = 0.118
-	var gate_h: float = 0.238
-	# Walls left / right of the gate and the lintel above it.
-	b.box(Vector3(-(half_w + gate_w) * 0.5, wall_h * 0.5, zc), Vector3(half_w - gate_w, wall_h, depth), STONE)
-	b.box(Vector3((half_w + gate_w) * 0.5, wall_h * 0.5, zc), Vector3(half_w - gate_w, wall_h, depth), STONE)
-	b.box(Vector3(0, (wall_h + gate_h) * 0.5, zc), Vector3(gate_w * 2.0, wall_h - gate_h, depth), STONE)
-	# The back of the gatehouse (closes the box so nothing inside shows).
-	b.box(Vector3(0, gate_h * 0.5, z0 + 0.004), Vector3(gate_w * 2.0, gate_h, 0.008), STONE_DARK)
-	b.box(Vector3(0, 0.002, zc), Vector3(gate_w * 2.0, 0.004, depth), STONE_DARK)
-	# Battlements.
-	var n: int = 9
-	for i: int in n:
-		var x: float = -half_w + (float(i) + 0.5) * (2.0 * half_w / float(n))
-		if i % 2 == 0:
-			b.box(Vector3(x, wall_h + 0.007, z1 - 0.008), Vector3(2.0 * half_w / float(n), 0.014, 0.014), STONE_DARK)
-	# Stone courses on the front face.
-	for k: int in 5:
-		var y: float = 0.03 + float(k) * 0.05
-		b.box(Vector3(-(half_w + gate_w) * 0.5, y, z1 + 0.0006), Vector3(half_w - gate_w, 0.002, 0.001), STONE_DARK)
-		b.box(Vector3((half_w + gate_w) * 0.5, y, z1 + 0.0006), Vector3(half_w - gate_w, 0.002, 0.001), STONE_DARK)
-	# Gate arch frame.
-	b.box(Vector3(0, gate_h + 0.004, z1 + 0.002), Vector3(gate_w * 2.0 + 0.008, 0.008, 0.004), STONE_DARK)
-	# Towers.
-	for sx: float in [-1.0, 1.0]:
-		var base := Vector3(sx * 0.126, 0.0, zc)
-		b.cylinder(base, Vector3.UP, 0.29, 0.021, 0.019, 10, STONE, false)
-		b.cylinder(base + Vector3(0, 0.29, 0), Vector3.UP, 0.012, 0.0225, 0.0225, 10, STONE_DARK)
-		b.cylinder(base + Vector3(0, 0.302, 0), Vector3.UP, 0.058, 0.0225, 0.0, 10, SLATE)
-		# Windows.
-		for wy: float in [0.12, 0.2]:
-			b.box(base + Vector3(0, wy, 0.021), Vector3(0.007, 0.014, 0.002), Color(0.15, 0.13, 0.2))
-		# A pennant on the spire.
-		var tip: Vector3 = base + Vector3(0, 0.36, 0)
-		b.box(tip + Vector3(0, 0.006, 0), Vector3(0.0015, 0.012, 0.0015), WOOD_DARK)
-		b.tri(tip + Vector3(0, 0.012, 0), tip + Vector3(0, 0.006, 0), tip + Vector3(sx * -0.014, 0.009, 0), ROYAL_BLUE if sx < 0 else Color(0.85, 0.2, 0.25))
-	# Keep behind the gate.
-	b.box(Vector3(0, 0.29, zc - 0.01), Vector3(0.09, 0.07, depth * 0.6), STONE)
-	b.cylinder(Vector3(0, 0.325, zc - 0.01), Vector3.UP, 0.04, 0.045, 0.0, 4, SLATE)
-	return b.commit()
-
-
 ## The diorama base: a rounded stone slab (below y = 0 in the world node,
 ## which sits BASE_HEIGHT up) with moss edges and grass beside the road.
 static func base(width: float, length: float, base_height: float, road_width: float) -> ArrayMesh:
@@ -345,8 +390,8 @@ static func base(width: float, length: float, base_height: float, road_width: fl
 		b.box(Vector3(gx, 0.0008, 0.0), Vector3(hw - road_width * 0.5 - 0.006, 0.0016, length - 0.01), GRASS)
 		b.box(Vector3(sx * (hw - 0.004), -0.001, 0.0), Vector3(0.006, 0.003, length - 0.012), MOSS)
 		# Little stones and tufts along the verge.
-		for i: int in 14:
-			var z: float = -length * 0.5 + 0.02 + (length - 0.04) * float(i) / 13.0
+		for i: int in 20:
+			var z: float = -length * 0.5 + 0.02 + (length - 0.04) * float(i) / 19.0
 			var off: float = 0.004 * sin(float(i) * 2.3)
 			if i % 3 == 0:
 				b.box(Vector3(gx + off, 0.0025, z), Vector3(0.006, 0.003, 0.005), STONE.darkened(0.1))

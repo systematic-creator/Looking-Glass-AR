@@ -10,8 +10,10 @@ extends RefCounted
 ##      fall time, of it);
 ##   5. cracked tiles always have an intact tile one lane over;
 ##   6. coin lines are reachable (no coin in an obstacle or out of jump reach);
+##   7. every obstacle behaves as its class (MageTrack.obstacle_class: JUMP
+##      only, DUCK only, EITHER, DODGE only): template_errors / class_ok;
 ## plus shape rules: a 0.3 m lead-in at every chunk start (so joins work),
-## items fit behind the castle gate, ramps lead onto tiles, nothing pokes up
+## items at most MAX_ITEM_LEN long, ramps lead onto tiles, nothing pokes up
 ## through a row, and a rolling cart's lane is clear of anything it would
 ## roll through.
 
@@ -452,9 +454,30 @@ static func _row_below_covers(tiles: Array[MageTrack.Tile], above: MageTrack.Til
 
 ## Template-level check: every rule at the slowest and fastest speed, both
 ## mirrors, and a path from each entry lane. Empty = the template is fair.
+## Does `kind` (alone in a lane) have exactly its class's answers at `speed`?
+static func class_ok(kind: StringName, speed: float) -> bool:
+	var key: String = "%s@%.2f" % [kind, speed]
+	if not _class_cache.has(key):
+		var want: Array = MageTrack.CLASS_ANSWERS[MageTrack.obstacle_class(kind)]
+		var got: Array = Array(answers(kind, speed))
+		# Roof kinds are dodge obstacles that may also be jumped onto / over.
+		_class_cache[key] = got == want or (MageTrack.ROOF_KINDS.has(kind) and got == ["jump"])
+	return bool(_class_cache[key])
+
+
+static var _class_cache: Dictionary = {}
+
+
 static func template_errors(template: Dictionary) -> PackedStringArray:
 	var errors := PackedStringArray()
 	var length: float = float(template["length"])
+	# Each obstacle reads as its class: its answers are exactly the class's.
+	for item: Dictionary in template["items"] as Array:
+		var kind := StringName(String(item["k"]))
+		if MageTrack.KINDS.has(kind):
+			for speed: float in [MageTrack.BASE_SPEED, MageTrack.MAX_SPEED]:
+				if not class_ok(kind, speed):
+					errors.append("%s: a %s does not behave as a %s obstacle @%.1f" % [template["name"], kind, MageTrack.obstacle_class(kind), speed])
 	for mirror: bool in [false, true]:
 		for speed: float in [MageTrack.BASE_SPEED, MageTrack.MAX_SPEED]:
 			var items: Dictionary = MageChunks.instantiate(template, 10.0, mirror, [0])

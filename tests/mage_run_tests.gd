@@ -29,6 +29,7 @@ func run_tests() -> void:
 	_test_slide_slam_drop()
 	_test_collisions()
 	_test_stumble()
+	_test_obstacle_classes()
 	_test_arcane_rows()
 	_test_cracked_and_ramps()
 	_test_scoring()
@@ -172,9 +173,12 @@ func _test_units() -> void:
 		prev = v
 	check("speed: starts at 1.2 run m/s, rises smoothly, never past 2.6", is_equal_approx(MageTrack.speed_at(0.0), 1.2) and monotonic and MageTrack.speed_at(1.0e6) <= MageTrack.MAX_SPEED + 0.0001 and MageTrack.speed_at(900.0) > 2.0)
 	check("jump: 11 cm apex, 0.55 s airtime", is_equal_approx(MageTrack.jump_height(MageTrack.JUMP_TIME * 0.5), MageTrack.JUMP_APEX) and absf(MageTrack.jump_height(MageTrack.JUMP_TIME)) < 0.0001)
-	check("reaction: every item is visible >= 0.75 s before it reaches the wizard at top speed (carts closing)", MageValidator.reaction_ok() and MageTrack.reaction_time(MageTrack.MAX_SPEED, MageTrack.CART_SPEED) >= MageTrack.REACTION_TIME)
-	check("box: the longest item fits hidden inside the castle behind the gate", (MageTrack.GATE_Z - MageTrack.FAR_Z) / MageTrack.RUN_TO_BOARD >= MageTrack.MAX_ITEM_LEN)
-	check("box: the board ends are inside the 60 cm board", MageTrack.NEAR_Z < 0.3 and MageTrack.FAR_Z > -0.3 and MageTrack.WIZARD_Z > 0.0)
+	check("reaction: every item is visible >= 1.0 s before it reaches the wizard at top speed (carts closing)", MageValidator.reaction_ok() and MageTrack.REACTION_TIME >= 1.0 and MageTrack.reaction_time(MageTrack.MAX_SPEED, MageTrack.CART_SPEED) >= MageTrack.REACTION_TIME)
+	check("scale: 0.20 board m per run m, 3.7 run m of road visible ahead", is_equal_approx(MageTrack.RUN_TO_BOARD, 0.2) and MageTrack.VISIBLE_AHEAD > 3.7)
+	check("box: the road's cuts are just inside the 90 cm board, the wizard near the player's end", (
+		MageTrack.NEAR_Z < MageTrack.BOARD_LENGTH * 0.5 and MageTrack.FAR_Z > -MageTrack.BOARD_LENGTH * 0.5 and MageTrack.WIZARD_Z > 0.25 and MageTrack.WIZARD_Z < MageTrack.NEAR_Z
+	))
+	check("box: content is generated past the far cut (slices in, never pops in)", MageTrack.SPAWN_AHEAD >= MageTrack.VISIBLE_AHEAD + MageTrack.MAX_ITEM_LEN and MageRunSim.GENERATE_AHEAD > MageTrack.SPAWN_AHEAD)
 
 
 func _test_manifest() -> void:
@@ -184,7 +188,7 @@ func _test_manifest() -> void:
 	check("catalog: Mage Run is registered with the other games, no errors", m != null and catalog.has_game(&"stack_tower") and catalog.has_game(&"tic_tac_toe") and catalog.errors.is_empty())
 	if m == null:
 		return
-	check("manifest: one player, 30 x 60 cm board, icon", m.max_players == 1 and m.board_size == Vector2(0.3, 0.6) and m.icon != null)
+	check("manifest: one player, 30 x 90 cm board, icon", m.max_players == 1 and m.board_size == Vector2(0.3, 0.9) and m.icon != null and m.validate().is_empty())
 	check("manifest: orientation \"either\" (portrait recommended by the hint, not forced)", m.orientation == "either")
 	var box: PlayBox = PlayBox.from_manifest(m)
 	check("manifest: tall box 40 cm default, adjustable 40-70 cm", m.tall_box and is_equal_approx(box.height(), 0.4) and is_equal_approx(box.min_height, 0.4) and is_equal_approx(box.max_height, 0.7) and box.is_adjustable())
@@ -324,7 +328,7 @@ func _test_collisions() -> void:
 	_run_to(sim, 4.0 - MageTrack.VISIBLE_AHEAD + 0.2)
 	var before: float = sim.obstacles[0].s0
 	_steps(sim, 0.5)
-	check("cart: waits hidden in the castle, then rolls toward the wizard at 0.4 m/s once out of the gate", parked and is_equal_approx(before - sim.obstacles[0].s0, MageTrack.CART_SPEED * 0.5))
+	check("cart: parked beyond the far cut, then rolls toward the wizard at 0.4 m/s once it reaches the cut", parked and is_equal_approx(before - sim.obstacles[0].s0, MageTrack.CART_SPEED * 0.5))
 	sim = _sim([{"k": "carriage", "lane": 0, "s": 1.0}])
 	_run_to(sim, 2.0)
 	check("carriage: blocks two lanes", not sim.alive and sim.crash_kind == &"carriage" and sim.obstacles[0].lanes == PackedInt32Array([0, 1]))
@@ -335,6 +339,81 @@ func _test_collisions() -> void:
 	var roof: bool = sim.support == &"roof" and is_equal_approx(sim.y, MageTrack.CARRIAGE_ROOF)
 	_run_to(sim, 2.2)
 	check("carriage: its roof is walkable (jump on, run along, drop off the end)", roof and sim.alive)
+
+
+func _test_obstacle_classes() -> void:
+	var expect: Dictionary = {
+		&"fence": &"jump", &"log": &"jump", &"beam": &"duck", &"barrier": &"either",
+		&"crates": &"dodge", &"wall": &"dodge", &"cart": &"dodge", &"carriage": &"dodge",
+	}
+	var classes_ok: bool = true
+	for kind: StringName in expect:
+		classes_ok = classes_ok and MageTrack.obstacle_class(kind) == expect[kind]
+	check("classes: fence / log JUMP, beam DUCK, barrier EITHER, crates / wall / cart / carriage DODGE", classes_ok and MageTrack.KINDS.size() == expect.size())
+	var answers_ok: bool = true
+	for kind: StringName in MageTrack.KINDS:
+		for v: float in [MageTrack.BASE_SPEED, 1.9, MageTrack.MAX_SPEED]:
+			answers_ok = answers_ok and MageValidator.class_ok(kind, v)
+	check("classes: each kind's answers are exactly its class's at slow, mid and top speed", answers_ok)
+	check("classes: EITHER barrier: jump and slide both work, running does not", MageValidator.answers(&"barrier", 1.2) == PackedStringArray(["jump", "slide"]) and MageValidator.answers(&"barrier", 2.6) == PackedStringArray(["jump", "slide"]))
+	check("classes: DODGE wall / crates / cart: neither jump nor slide", MageValidator.answers(&"wall", 2.6).is_empty() and MageValidator.answers(&"wall", 1.2).is_empty() and MageValidator.answers(&"crates", 1.2).is_empty() and MageValidator.answers(&"cart", 1.2).is_empty())
+	check("classes: shapes read by height: low (jump) < wizard < tall (dodge); duck and either leave a slide gap", (
+		MageTrack.FENCE_TOP < MageTrack.BODY_HEIGHT and MageTrack.LOG_TOP < MageTrack.BODY_HEIGHT
+		and MageTrack.WALL_TOP > MageTrack.JUMP_APEX and MageTrack.CRATE_TOP > MageTrack.BODY_HEIGHT
+		and MageTrack.BEAM_BASE > MageTrack.SLIDE_HEIGHT and MageTrack.BARRIER_BASE > MageTrack.SLIDE_HEIGHT
+		and MageTrack.BARRIER_TOP < MageTrack.JUMP_APEX * 0.7 and MageTrack.BEAM_TOP > MageTrack.JUMP_APEX
+	))
+	# In the sim, one obstacle each.
+	var jump_at: float = 1.04 - MageTrack.JUMP_TIME * 0.5 * MageTrack.speed_at(0.0)
+	for kind: String in ["fence", "log", "beam", "barrier", "wall"]:
+		var results: Array[bool] = []
+		for move: String in ["run", "jump", "slide", "lane"]:
+			var sim: MageRunSim = _sim([{"k": kind, "lane": 1, "s": 1.0}])
+			match move:
+				"jump":
+					_run_to(sim, jump_at)
+					sim.swipe(Vector2i.UP)
+				"slide":
+					_run_to(sim, 0.75)
+					sim.swipe(Vector2i.DOWN)
+				"lane":
+					_run_to(sim, 0.6)
+					sim.swipe(Vector2i.LEFT)
+			_run_to(sim, 1.8)
+			results.append(sim.alive)
+		var want: Array[bool] = []
+		match MageTrack.obstacle_class(StringName(kind)):
+			&"jump":
+				want = [false, true, false, true]
+			&"duck":
+				want = [false, false, true, true]
+			&"either":
+				want = [false, true, true, true]
+			&"dodge":
+				want = [false, false, false, true]
+		check("classes in the sim: %s (%s): run / jump / slide / lane change -> %s" % [kind, MageTrack.obstacle_class(StringName(kind)), results], results == want)
+	# The validator respects the classes when it judges a template.
+	var duck_then_jump: Dictionary = {"name": "beam_then_logs", "length": 2.0, "items": [
+		{"k": "beam", "lane": 0, "s": 0.8}, {"k": "beam", "lane": 1, "s": 0.8}, {"k": "beam", "lane": 2, "s": 0.8},
+		{"k": "log", "lane": 0, "s": 0.95}, {"k": "log", "lane": 1, "s": 0.95}, {"k": "log", "lane": 2, "s": 0.95}]}
+	check("validator: a DUCK wall straight into a JUMP wall (no time to get up) is rejected", not MageValidator.template_errors(duck_then_jump).is_empty())
+	var either_then_duck: Dictionary = {"name": "barrier_then_beams", "length": 2.0, "items": [
+		{"k": "barrier", "lane": 0, "s": 0.8}, {"k": "barrier", "lane": 1, "s": 0.8}, {"k": "barrier", "lane": 2, "s": 0.8},
+		{"k": "beam", "lane": 0, "s": 0.95}, {"k": "beam", "lane": 1, "s": 0.95}, {"k": "beam", "lane": 2, "s": 0.95}]}
+	check("validator: ... but an EITHER wall into a DUCK wall is fair (slide under both)", MageValidator.template_errors(either_then_duck).is_empty())
+	var walls: Dictionary = {"name": "stone_walls", "length": 2.0, "items": [
+		{"k": "wall", "lane": 0, "s": 0.8}, {"k": "wall", "lane": 1, "s": 0.8}, {"k": "wall", "lane": 2, "s": 0.8}]}
+	check("validator: DODGE walls across every lane are rejected (no jump or slide gets past)", not MageValidator.template_errors(walls).is_empty())
+	var under_row: Dictionary = {"name": "wall_under_row", "length": 3.0, "items": [
+		{"k": "tiles", "lane": 1, "row": 1, "s": 0.6, "len": 1.2}, {"k": "wall", "lane": 1, "s": 1.0}]}
+	check("validator: a tall wall poking up through an arcane row is rejected", not MageValidator.template_errors(under_row).is_empty())
+	var used: Dictionary = {}
+	for t: Dictionary in MageChunks.TEMPLATES:
+		for item: Dictionary in t["items"] as Array:
+			var k := StringName(String(item["k"]))
+			if MageTrack.KINDS.has(k):
+				used[MageTrack.obstacle_class(k)] = true
+	check("templates: all four classes are used", used.size() == 4)
 
 
 func _test_stumble() -> void:
@@ -552,7 +631,7 @@ func _test_generator() -> void:
 	var reaction: bool = true
 	for t: Dictionary in MageChunks.TEMPLATES:
 		reaction = reaction and float(t["length"]) * 0.0 + MageTrack.VISIBLE_AHEAD / MageTrack.MAX_SPEED >= MageTrack.REACTION_TIME
-	check("generator: obstacles emerge from the gate at least 0.75 s away even at top speed", reaction)
+	check("generator: obstacles slice in at the far cut at least 1 s away even at top speed", reaction)
 	var sim := MageRunSim.new(5)
 	var lead_clear: bool = true
 	for o: MageTrack.Obstacle in sim.obstacles:
@@ -616,7 +695,7 @@ func _test_host_swipes() -> void:
 	check("host: a swipe down slides", game.sim.sliding())
 	_tick(game, 0.7)
 	game._hide_hint()
-	# Seen from the castle end (walked round the board), screen left is his right.
+	# Seen from the far end (walked round the board), screen left is his right.
 	host.orbit_camera.yaw = PI
 	host.orbit_camera.orbit(Vector2.ZERO)
 	await frames(1)
@@ -746,9 +825,28 @@ func _test_first_run_hint() -> void:
 
 func _test_containment() -> void:
 	await _set_window(PORTRAIT_WINDOW)
+	var sliced_far: bool = false
+	var sliced_near: bool = false
 	for start: float in [0.0, 420.0, 820.0]:
 		var host: GameHost = await _running_host()
 		var game: MageRunGame = _game(host)
+		if start == 0.0:
+			check("cut: no castle or gate, just the base and the road", game._world.get_node_or_null(^"Castle") == null and game._world.get_node_or_null(^"GatePortal") == null and game.scenery_aabbs().size() == 2)
+			var road: AABB = game.scenery_aabbs()[1]
+			var cut: Vector2 = game.cut_z()
+			check("cut: the road runs the whole board and stops dead at the two cuts", is_equal_approx(road.position.z, cut.x) and is_equal_approx(road.end.z, cut.y) and road.size.z > 0.85)
+			var mats: Array[ShaderMaterial] = MageProps.cut_materials()
+			var clipped: bool = mats.has(MageProps.solid_material()) and mats.has(MageProps.glow_material())
+			for mmi: MultiMeshInstance3D in [game._world.get_node(^"ArcaneTiles"), game._world.get_node(^"ArcaneRamps"), game._world.get_node(^"Coins")]:
+				clipped = clipped and mats.has(mmi.material_override as ShaderMaterial)
+			check("cut: props, tiles, ramps and coins all use materials that clip at the cuts", clipped)
+			var far_world: Vector3 = game._world.to_global(Vector3(0, 0.05, MageTrack.FAR_Z - 0.01))
+			var near_world: Vector3 = game._world.to_global(Vector3(0, 0.05, MageTrack.NEAR_Z + 0.01))
+			var mid_world: Vector3 = game._world.to_global(Vector3(0, 0.05, 0.0))
+			check("cut: the clip planes cut away just past each end and keep the road between", (
+				MageProps.cut_far.is_point_over(far_world) and MageProps.cut_near.is_point_over(near_world)
+				and not MageProps.cut_far.is_point_over(mid_world) and not MageProps.cut_near.is_point_over(mid_world)
+			))
 		game.sim.reset(11, start)
 		game.sim.grace_t = 1.0e6
 		var inside: bool = true
@@ -759,6 +857,9 @@ func _test_containment() -> void:
 			if frame % 6 != 0:
 				continue
 			seen_rows = seen_rows or game._tile_mm.visible_instance_count > 0
+			for a: AABB in game.content_aabbs(false):
+				sliced_far = sliced_far or (a.position.z < game.cut_z().x and a.end.z > game.cut_z().x)
+				sliced_near = sliced_near or (a.position.z < game.cut_z().y and a.end.z > game.cut_z().y)
 			var aabbs: Array[AABB] = game.content_aabbs()
 			aabbs.append_array(game.scenery_aabbs())
 			for a: AABB in aabbs:
@@ -767,10 +868,11 @@ func _test_containment() -> void:
 					if not game.box_contains(p, -0.0005):
 						inside = false
 						worst = "%s at %.1f m" % [p, game.sim.distance]
-		check("box: from %d m, 15 s of run: props, tiles, coins, wizard and scenery stay inside the play box%s" % [int(start), "" if inside else " (" + worst + ")"], inside)
+		check("box: from %d m, 15 s of run: what is drawn (props, tiles, coins, wizard, scenery) stays inside the play box%s" % [int(start), "" if inside else " (" + worst + ")"], inside)
 		if start > 0.0:
 			check("box: arcane tiles were on screen from %d m" % int(start), seen_rows)
 		await free_host(host)
+	check("cut: items slice in across the far cut and out across the near cut", sliced_far and sliced_near)
 
 
 func _test_budget() -> void:
@@ -780,7 +882,9 @@ func _test_budget() -> void:
 	var report: Array[String] = []
 	var k: float = MageTrack.RUN_TO_BOARD
 	var props: Dictionary = {
-		"fence": MageProps.fence(MageTrack.FENCE_LEN * k), "beam": MageProps.beam(MageTrack.BEAM_LEN * k),
+		"fence": MageProps.fence(MageTrack.FENCE_LEN * k), "log": MageProps.log_mesh(MageTrack.LOG_LEN * k),
+		"beam": MageProps.beam(MageTrack.BEAM_LEN * k), "barrier": MageProps.barrier(MageTrack.BARRIER_LEN * k),
+		"wall": MageProps.wall(MageTrack.WALL_LEN * k),
 		"crates": MageProps.crates(MageTrack.CRATE_MIN_LEN * k), "cart": MageProps.cart(MageTrack.CART_LEN * k),
 		"carriage": MageProps.carriage(MageTrack.CARRIAGE_LEN * k),
 	}

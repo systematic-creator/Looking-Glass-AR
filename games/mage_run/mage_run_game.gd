@@ -1,8 +1,9 @@
 class_name MageRunGame
 extends LGGame
 ## Mage Run: a medieval fantasy three-lane endless runner on a storybook
-## diorama. The wizard runs toward a castle at the far end of the board;
-## the world scrolls toward the player. Swipe left / right to change lane,
+## diorama. The road runs the length of the board and simply stops at a
+## clean cut at each end; the world scrolls toward the player and items
+## slice in at the far cut and out at the near one. Swipe left / right to change lane,
 ## up to jump (or climb onto the arcane row above), down to slide (or drop a
 ## row). Two hologram "arcane rows" of rune-stone platforms (3 lanes each)
 ## appear above the road from 150 m and 400 m. Coins fill the staff meter;
@@ -15,7 +16,7 @@ extends LGGame
 
 ## The board the layout is designed for (board m); a different (fitted)
 ## board scales the whole diorama uniformly to fit.
-const DESIGN_BOARD := Vector2(0.3, 0.6)
+const DESIGN_BOARD := Vector2(0.3, 0.9)
 ## The world sits on a stone base this thick.
 const BASE_HEIGHT: float = 0.008
 ## Room needed above the base (the top row, a jump on it, the hat).
@@ -374,16 +375,17 @@ func _hide_hint() -> void:
 func _build_scenery() -> void:
 	var base := MeshInstance3D.new()
 	base.name = "Base"
-	base.mesh = MageProps.base(DESIGN_BOARD.x, DESIGN_BOARD.y, BASE_HEIGHT, ROAD_WIDTH)
+	# The road and its base end in clean cuts at FAR_Z / NEAR_Z (no building).
+	base.mesh = MageProps.base(DESIGN_BOARD.x, MageTrack.NEAR_Z - MageTrack.FAR_Z, BASE_HEIGHT, ROAD_WIDTH)
 	base.material_override = MageProps.solid_material()
 	_world.add_child(base)
 	var road := MeshInstance3D.new()
 	road.name = "Road"
 	var plane := PlaneMesh.new()
-	var length: float = MageTrack.NEAR_Z + DESIGN_BOARD.y * 0.5 - 0.002 - (MageTrack.GATE_Z + DESIGN_BOARD.y * 0.5)
+	var length: float = MageTrack.NEAR_Z - MageTrack.FAR_Z
 	plane.size = Vector2(ROAD_WIDTH, length)
 	road.mesh = plane
-	var zc: float = (MageTrack.GATE_Z + MageTrack.NEAR_Z) * 0.5
+	var zc: float = (MageTrack.FAR_Z + MageTrack.NEAR_Z) * 0.5
 	road.position = Vector3(0, 0.0006, zc)
 	_road_mat = ShaderMaterial.new()
 	_road_mat.shader = preload("res://games/mage_run/shaders/road.gdshader")
@@ -391,22 +393,6 @@ func _build_scenery() -> void:
 	_road_mat.set_shader_parameter("width", ROAD_WIDTH)
 	road.material_override = _road_mat
 	_world.add_child(road)
-	var castle := MeshInstance3D.new()
-	castle.name = "Castle"
-	castle.mesh = MageProps.castle()
-	castle.material_override = MageProps.solid_material()
-	_world.add_child(castle)
-	var portal := MeshInstance3D.new()
-	portal.name = "GatePortal"
-	var quad := QuadMesh.new()
-	quad.size = Vector2(0.236, 0.238)
-	portal.mesh = quad
-	portal.position = Vector3(0, 0.119, MageTrack.GATE_Z + 0.0005)
-	var pm := ShaderMaterial.new()
-	pm.shader = preload("res://games/mage_run/shaders/gate_portal.gdshader")
-	pm.set_shader_parameter("aspect", 0.236 / 0.238)
-	portal.material_override = pm
-	_world.add_child(portal)
 
 
 func _build_wizard() -> void:
@@ -525,18 +511,14 @@ static func _mote_mesh() -> QuadMesh:
 
 
 func _build_pools() -> void:
-	var tile_mat := ShaderMaterial.new()
-	tile_mat.shader = preload("res://games/mage_run/shaders/arcane_tile.gdshader")
+	var tile_mat: ShaderMaterial = MageProps.cut_material(preload("res://games/mage_run/shaders/arcane_tile.gdshader"))
 	tile_mat.set_shader_parameter("width", TILE_WIDTH)
 	_tile_mm = _make_multimesh("ArcaneTiles", MageProps.tile_unit(), tile_mat, MAX_TILES, true)
 	_ramp_mm = _make_multimesh("ArcaneRamps", MageProps.ramp_unit(), tile_mat, MAX_RAMPS, true)
-	var coin_mat := StandardMaterial3D.new()
-	coin_mat.vertex_color_use_as_albedo = true
-	coin_mat.metallic = 0.6
-	coin_mat.roughness = 0.35
-	coin_mat.emission_enabled = true
-	coin_mat.emission = Color(0.55, 0.38, 0.05)
-	coin_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var coin_mat: ShaderMaterial = MageProps.cut_material(MageProps.SOLID_SHADER)
+	coin_mat.set_shader_parameter("metallic_value", 0.6)
+	coin_mat.set_shader_parameter("roughness_value", 0.35)
+	coin_mat.set_shader_parameter("emission_color", Color(0.55, 0.38, 0.05))
 	_coin_mm = _make_multimesh("Coins", MageProps.coin(), coin_mat, MAX_COINS, false)
 
 
@@ -558,20 +540,32 @@ func _make_multimesh(node_name: String, mesh: Mesh, mat: Material, count: int, c
 
 # --- Drawing the sim ----------------------------------------------------------------
 
-## The near-end dissolve: 1 well inside, 0 at the near edge of the box.
-static func near_fade(z_near: float) -> float:
-	return clampf((MageTrack.NEAR_Z - z_near) / MageTrack.NEAR_FADE, 0.0, 1.0)
-
-
-## Is a track item from s0 to s1 drawn (inside the box, out of the castle's back)?
+## Is any of a track item from s0 to s1 on the road between the two cuts?
+## (The part beyond a cut is clipped away by the materials.)
 func _item_shown(s0: float, s1: float) -> bool:
-	return MageTrack.board_z(s1, sim.distance) >= MageTrack.FAR_Z and MageTrack.board_z(s0, sim.distance) < MageTrack.NEAR_Z
+	return MageTrack.board_z(s0, sim.distance) > MageTrack.FAR_Z and MageTrack.board_z(s1, sim.distance) < MageTrack.NEAR_Z
+
+
+## The cut planes in world space (follow the board in AR), for the materials.
+func _update_cut() -> void:
+	var xf: Transform3D = _world.global_transform
+	var n_far: Vector3 = (xf.basis * Vector3(0, 0, -1)).normalized()
+	var p_far: Vector3 = xf * Vector3(0, 0, MageTrack.FAR_Z)
+	var n_near: Vector3 = (xf.basis * Vector3(0, 0, 1)).normalized()
+	var p_near: Vector3 = xf * Vector3(0, 0, MageTrack.NEAR_Z)
+	MageProps.set_cut(Plane(n_near, n_near.dot(p_near)), Plane(n_far, n_far.dot(p_far)))
+
+
+## The cut lines in board space (z of the far and near cut).
+func cut_z() -> Vector2:
+	return Vector2(MageTrack.FAR_Z, MageTrack.NEAR_Z) * scale_u
 
 
 func _sync_visuals(_delta: float) -> void:
 	if sim == null or _world == null:
 		return
 	var d: float = sim.distance
+	_update_cut()
 	_road_mat.set_shader_parameter("scroll", d * MageTrack.RUN_TO_BOARD)
 	_sync_props(d)
 	_sync_tiles(d)
@@ -594,9 +588,6 @@ func _sync_props(d: float) -> void:
 		var z_near: float = MageTrack.board_z(o.s0, d)
 		var cx: float = (o.min_x() + o.max_x()) * 0.5
 		node.position = Vector3(cx, 0.0, (z_far + z_near) * 0.5)
-		var f: float = near_fade(z_near)
-		node.scale = Vector3.ONE * f
-		node.visible = f > 0.0
 	for id: Variant in _props.keys():
 		if not seen.has(id):
 			(_props[id] as Node).queue_free()
@@ -610,8 +601,14 @@ func _make_prop(o: MageTrack.Obstacle) -> MeshInstance3D:
 	match o.kind:
 		&"fence":
 			node.mesh = MageProps.fence(depth)
+		&"log":
+			node.mesh = MageProps.log_mesh(depth)
 		&"beam":
 			node.mesh = MageProps.beam(depth)
+		&"barrier":
+			node.mesh = MageProps.barrier(depth)
+		&"wall":
+			node.mesh = MageProps.wall(depth)
 		&"crates":
 			node.mesh = MageProps.crates(depth, o.lanes.size())
 		&"cart":
@@ -631,16 +628,12 @@ func _sync_tiles(d: float) -> void:
 			continue
 		var z_far: float = MageTrack.board_z(t.s1(), d)
 		var z_near: float = MageTrack.board_z(t.s0, d)
-		var f: float = near_fade(z_near)
-		if f <= 0.0:
-			continue
 		var len_b: float = z_near - z_far
-		var basis := Basis.from_scale(Vector3(TILE_WIDTH, MageTrack.TILE_THICKNESS, len_b * 0.97) * f)
-		var pos := Vector3(MageTrack.lane_x(t.lane), MageTrack.row_y(t.row) - MageTrack.TILE_THICKNESS * (1.0 - f) * 0.5, (z_far + z_near) * 0.5)
+		var basis := Basis.from_scale(Vector3(TILE_WIDTH, MageTrack.TILE_THICKNESS, len_b * 0.97))
+		var pos := Vector3(MageTrack.lane_x(t.lane), MageTrack.row_y(t.row), (z_far + z_near) * 0.5)
 		_set_xf(_tile_mm, n, Transform3D(basis, pos))
-		var emerge: float = clampf((z_near - MageTrack.GATE_Z) / 0.06, 0.0, 1.0)
 		var crumble: float = 0.0 if t.crumble < 0.0 else clampf(t.crumble / MageTrack.CRACK_TIME, 0.0, 1.0)
-		_tile_mm.set_instance_custom_data(n, Color(minf(f, emerge), 1.0 if t.cracked else 0.0, crumble, len_b))
+		_tile_mm.set_instance_custom_data(n, Color(1.0, 1.0 if t.cracked else 0.0, crumble, len_b))
 		n += 1
 	_tile_mm.visible_instance_count = n
 	var r_n: int = 0
@@ -649,13 +642,9 @@ func _sync_tiles(d: float) -> void:
 			continue
 		var z_far: float = MageTrack.board_z(r.s1(), d)
 		var z_near: float = MageTrack.board_z(r.s0, d)
-		var f: float = near_fade(z_near)
-		if f <= 0.0:
-			continue
-		var basis := Basis.from_scale(Vector3(TILE_WIDTH, MageTrack.ROW_HEIGHT, z_near - z_far) * f)
+		var basis := Basis.from_scale(Vector3(TILE_WIDTH, MageTrack.ROW_HEIGHT, z_near - z_far))
 		_set_xf(_ramp_mm, r_n, Transform3D(basis, Vector3(MageTrack.lane_x(r.lane), MageTrack.row_y(r.row), (z_far + z_near) * 0.5)))
-		var emerge: float = clampf((z_near - MageTrack.GATE_Z) / 0.06, 0.0, 1.0)
-		_ramp_mm.set_instance_custom_data(r_n, Color(minf(f, emerge), 0.0, 0.0, z_near - z_far))
+		_ramp_mm.set_instance_custom_data(r_n, Color(1.0, 0.0, 0.0, z_near - z_far))
 		r_n += 1
 	_ramp_mm.visible_instance_count = r_n
 
@@ -679,10 +668,10 @@ func _sync_coins(d: float) -> void:
 		if n >= MAX_COINS or (c.taken and not c.flying):
 			continue
 		var z: float = MageTrack.board_z(c.s, d)
-		if z < MageTrack.GATE_Z - 0.01 or z > MageTrack.NEAR_Z - MageTrack.COIN_RADIUS:
+		if z < MageTrack.FAR_Z - MageTrack.COIN_RADIUS or z > MageTrack.NEAR_Z + MageTrack.COIN_RADIUS:
 			continue
 		var pos := Vector3(MageTrack.lane_x(c.lane), c.y, z)
-		var f: float = near_fade(z + MageTrack.COIN_RADIUS)
+		var f: float = 1.0
 		if c.flying:
 			var t: float = sim.coin_fly_t(c)
 			pos = pos.lerp(wiz, t)
@@ -742,7 +731,23 @@ func _sync_wizard() -> void:
 
 ## Board-space AABBs of everything drawn on the track right now (props,
 ## tiles, ramps, coins, the wizard), to check nothing leaves the play box.
-func content_aabbs() -> Array[AABB]:
+## Board-space boxes of what is drawn (each clipped to the road's cuts, as
+## the materials clip it). `clipped` false gives the whole meshes.
+func content_aabbs(clipped: bool = true) -> Array[AABB]:
+	var raw: Array[AABB] = _content_aabbs_raw()
+	if not clipped:
+		return raw
+	var cut: Vector2 = cut_z()
+	var out: Array[AABB] = []
+	for a: AABB in raw:
+		var z0: float = maxf(a.position.z, cut.x)
+		var z1: float = minf(a.end.z, cut.y)
+		if z1 > z0:
+			out.append(AABB(Vector3(a.position.x, a.position.y, z0), Vector3(a.size.x, a.size.y, z1 - z0)))
+	return out
+
+
+func _content_aabbs_raw() -> Array[AABB]:
 	var out: Array[AABB] = []
 	var to_board: Transform3D = global_transform.affine_inverse()
 	for node: MeshInstance3D in _props.values():
@@ -762,7 +767,7 @@ func content_aabbs() -> Array[AABB]:
 func scenery_aabbs() -> Array[AABB]:
 	var out: Array[AABB] = []
 	var to_board: Transform3D = global_transform.affine_inverse()
-	for n: String in ["Base", "Road", "Castle", "GatePortal"]:
+	for n: String in ["Base", "Road"]:
 		var node: MeshInstance3D = _world.get_node(n) as MeshInstance3D
 		out.append(to_board * node.global_transform * node.mesh.get_aabb())
 	return out

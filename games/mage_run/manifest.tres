@@ -7,11 +7,11 @@
 script = ExtResource("1_manifest")
 id = &"mage_run"
 display_name = "Mage Run"
-description = "Endless runner on a storybook diorama. Swipe to dodge carts, crates and fences, grab star coins and climb the glowing arcane rows above the road. Best with the phone upright."
+description = "Endless runner on a 90 cm storybook road. Jump fences and logs, slide under banners, jump or slide past barriers, dodge walls, carts and carriages, and climb the glowing arcane rows. Best with the phone upright."
 icon = ExtResource("2_icon")
 min_players = 1
 max_players = 1
-board_size = Vector2(0.3, 0.6)
+board_size = Vector2(0.3, 0.9)
 board_height = 0.25
 box_height = 0.4
 box_min_height = 0.4

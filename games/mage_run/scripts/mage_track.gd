@@ -15,7 +15,7 @@ const LANES: int = 3
 const TOP_ROW: int = 2
 const LANE_PITCH: float = 0.075
 const ROW_HEIGHT: float = 0.10
-const RUN_TO_BOARD: float = 0.16
+const RUN_TO_BOARD: float = 0.20
 
 ## The wizard: half length along the track (run m), half width and height
 ## (board m); sliding halves the height.
@@ -44,24 +44,35 @@ const TILE_THICKNESS: float = 0.008
 ## A swipe down on a row drops this far first (so the row is left).
 const DROP_NUDGE: float = 0.012
 
-## Obstacle shapes. Each needs one answer (see answers in MageValidator):
-## fence = jump, beam = slide, crates / cart = change lane, carriage = change
-## lane or jump onto its roof.
+## Obstacle shapes, in four classes readable by shape (see obstacle_class;
+## MageValidator.answers proves each class's answers):
+##   JUMP only: fence, log (low, solid to the ground).
+##   DUCK only: beam (a gantry with a hanging banner, gap underneath).
+##   EITHER: barrier (a striped plank on legs: low enough to jump, a gap
+##     underneath to slide through).
+##   DODGE only: crates, wall, cart (taller than the wizard or too long to
+##     jump), carriage (change lane, or jump onto its roof).
 const FENCE_LEN: float = 0.12
 const FENCE_TOP: float = 0.035
+const LOG_LEN: float = 0.10
+const LOG_TOP: float = 0.032
 const BEAM_LEN: float = 0.10
 const BEAM_BASE: float = 0.035
 const BEAM_TOP: float = 0.13
+const BARRIER_LEN: float = 0.08
+const BARRIER_BASE: float = 0.035
+const BARRIER_TOP: float = 0.062
+const WALL_LEN: float = 0.15
+const WALL_TOP: float = 0.14
 const CRATE_TOP: float = 0.09
 const CRATE_MIN_LEN: float = 0.6
 const CART_LEN: float = 0.65
 const CART_TOP: float = 0.09
-## Carts roll toward the wizard at this speed (run m / s) once out of the gate.
+## Carts roll toward the wizard at this speed (run m / s) once on the board.
 const CART_SPEED: float = 0.4
 const CARRIAGE_LEN: float = 0.6
 const CARRIAGE_ROOF: float = 0.07
-## Nothing on the track is longer than this (run m): it must fit behind the
-## castle gate before it comes out (see MageRunGame).
+## Nothing on the track is longer than this (run m).
 const MAX_ITEM_LEN: float = 0.656
 const TILE_PIECE_LEN: float = 0.6
 const COIN_LIFT: float = 0.02
@@ -78,21 +89,45 @@ const ROW1_AT: float = 150.0
 const ROW2_AT: float = 400.0
 const COLLAPSE_AT: float = 800.0
 
-## Board layout (board m at scale 1): the wizard runs at WIZARD_Z; content
-## comes out of the castle gate at GATE_Z and is gone by NEAR_Z.
-const WIZARD_Z: float = 0.175
-const GATE_Z: float = -0.19
-const FAR_Z: float = -0.296
-const NEAR_Z: float = 0.297
-const NEAR_FADE: float = 0.03
-## Run metres from the wizard to the gate (what the player can see ahead).
-const VISIBLE_AHEAD: float = (WIZARD_Z - GATE_Z) / RUN_TO_BOARD
-## Content may exist (hidden in the castle) up to this far ahead...
-const SPAWN_AHEAD: float = (WIZARD_Z - FAR_Z) / RUN_TO_BOARD
+## Board layout (board m at scale 1, 30 x 90 cm board): the wizard runs at
+## WIZARD_Z; the road is cut off clean at both ends of the board. Content
+## slices in at the far cut (FAR_Z) and slices out at the near cut (NEAR_Z):
+## every content material clips at those planes (MageProps.set_cut).
+const BOARD_LENGTH: float = 0.9
+const WIZARD_Z: float = 0.30
+const FAR_Z: float = -0.445
+const NEAR_Z: float = 0.445
+## Run metres from the wizard to the far cut (what the player can see ahead).
+const VISIBLE_AHEAD: float = (WIZARD_Z - FAR_Z) / RUN_TO_BOARD
+## Content exists a little beyond the cut (it slices in, never pops)...
+const SPAWN_AHEAD: float = VISIBLE_AHEAD + MAX_ITEM_LEN
 ## ... and is removed this far behind the wizard.
 const BEHIND: float = (NEAR_Z - WIZARD_Z) / RUN_TO_BOARD
-## The fairness rule: everything is in view this long before it arrives.
-const REACTION_TIME: float = 0.75
+## The fairness rule: everything is in view this long before it arrives
+## (even at top speed with a cart rolling toward the wizard).
+const REACTION_TIME: float = 1.0
+
+## Obstacle classes (what gets you past one standing alone in your lane).
+const CLASS_ANSWERS: Dictionary = {
+	&"jump": ["jump"],
+	&"duck": ["slide"],
+	&"either": ["jump", "slide"],
+	&"dodge": [],
+}
+## Kinds with a walkable roof: dodge them, or jump onto (or over) the roof.
+const ROOF_KINDS: Array[StringName] = [&"carriage"]
+const KINDS: Array[StringName] = [&"fence", &"log", &"beam", &"barrier", &"crates", &"wall", &"cart", &"carriage"]
+
+
+static func obstacle_class(kind: StringName) -> StringName:
+	match kind:
+		&"fence", &"log":
+			return &"jump"
+		&"beam":
+			return &"duck"
+		&"barrier":
+			return &"either"
+	return &"dodge"
 
 
 static func speed_at(distance: float) -> float:
@@ -143,7 +178,7 @@ static func board_z(s: float, distance: float) -> float:
 
 
 ## A cart's blocking interval, in wizard positions, at a steady `speed`: it
-## leaves the gate (s0 - distance = VISIBLE_AHEAD) and rolls at CART_SPEED.
+## reaches the far cut (s0 - distance = VISIBLE_AHEAD) and rolls at CART_SPEED.
 static func cart_block(s0: float, length: float, speed: float) -> Vector2:
 	var k: float = CART_SPEED / speed
 	var start: float = (s0 - BODY_HALF_LEN + k * (s0 - VISIBLE_AHEAD)) / (1.0 + k)

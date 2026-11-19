@@ -21,8 +21,37 @@ const TEMPLATES: Array[Dictionary] = [
 		{"k": "coins", "shape": "line", "lane": 1, "row": 0, "s": 0.3, "n": 5, "step": 0.18},
 	]},
 	{"name": "fences_side", "min_d": 0.0, "weight": 1.0, "length": 1.6, "items": [
-		{"k": "fence", "lane": 0, "s": 0.7}, {"k": "fence", "lane": 2, "s": 0.7},
+		{"k": "log", "lane": 0, "s": 0.7}, {"k": "log", "lane": 2, "s": 0.7},
 		{"k": "coins", "shape": "line", "lane": 1, "row": 0, "s": 0.4, "n": 6, "step": 0.18},
+	]},
+	# JUMP only: a log across every lane.
+	{"name": "log_wall", "min_d": 15.0, "weight": 0.8, "length": 1.8, "items": [
+		{"k": "log", "lane": 0, "s": 0.9}, {"k": "log", "lane": 1, "s": 0.9}, {"k": "log", "lane": 2, "s": 0.9},
+		{"k": "coins", "shape": "jump", "lane": 0, "row": 0, "s": 0.6, "n": 7, "step": 0.12},
+	]},
+	# EITHER: striped barriers across every lane: jump them or slide under.
+	{"name": "barrier_wall", "min_d": 0.0, "weight": 1.0, "length": 1.8, "items": [
+		{"k": "barrier", "lane": 0, "s": 0.9}, {"k": "barrier", "lane": 1, "s": 0.9}, {"k": "barrier", "lane": 2, "s": 0.9},
+		{"k": "coins", "shape": "jump", "lane": 1, "row": 0, "s": 0.6, "n": 7, "step": 0.12},
+	]},
+	# EITHER in the middle (a low coin line only a slide collects), JUMP
+	# fences either side.
+	{"name": "barrier_side", "min_d": 10.0, "weight": 0.9, "length": 1.8, "items": [
+		{"k": "fence", "lane": 0, "s": 0.9}, {"k": "barrier", "lane": 1, "s": 0.9}, {"k": "fence", "lane": 2, "s": 0.9},
+		{"k": "coins", "shape": "line", "lane": 1, "row": 0, "s": 0.7, "n": 4, "step": 0.1},
+	]},
+	# DODGE only: stone walls, weave through.
+	{"name": "wall_weave", "min_d": 20.0, "weight": 1.0, "length": 2.8, "items": [
+		{"k": "wall", "lane": 0, "s": 0.8}, {"k": "wall", "lane": 1, "s": 0.8},
+		{"k": "wall", "lane": 1, "s": 2.0}, {"k": "wall", "lane": 2, "s": 2.0},
+		{"k": "coins", "shape": "weave", "s": 0.4, "n": 11, "step": 0.2, "row": 0, "lanes": [1, 2, 2, 2, 2, 1, 0, 0, 0, 0, 0]},
+	]},
+	# All four classes at once: fence (jump), barrier (either), beam (duck),
+	# then a wall (dodge).
+	{"name": "four_classes", "min_d": 40.0, "weight": 1.0, "length": 2.6, "items": [
+		{"k": "fence", "lane": 0, "s": 0.8}, {"k": "barrier", "lane": 1, "s": 0.8}, {"k": "beam", "lane": 2, "s": 0.8},
+		{"k": "wall", "lane": 1, "s": 1.9},
+		{"k": "coins", "shape": "jump", "lane": 1, "row": 0, "s": 0.5, "n": 7, "step": 0.12},
 	]},
 	{"name": "fence_wall", "min_d": 0.0, "weight": 1.0, "length": 1.8, "items": [
 		{"k": "fence", "lane": 0, "s": 0.9}, {"k": "fence", "lane": 1, "s": 0.9}, {"k": "fence", "lane": 2, "s": 0.9},
@@ -46,8 +75,10 @@ const TEMPLATES: Array[Dictionary] = [
 		{"k": "fence", "lane": 2, "s": 1.0},
 		{"k": "coins", "shape": "line", "lane": 2, "row": 0, "s": 1.3, "n": 4, "step": 0.2},
 	]},
-	{"name": "cart_lane", "min_d": 60.0, "weight": 0.9, "length": 2.2, "items": [
-		{"k": "cart", "lane": 1, "s": 1.2}, {"k": "crates", "lane": 0, "s": 0.5, "len": 0.6},
+	# Carts start rolling when they reach the far cut, so they sit late in
+	# their chunk (they meet the wizard about 1 m earlier than placed).
+	{"name": "cart_lane", "min_d": 60.0, "weight": 0.9, "length": 3.0, "items": [
+		{"k": "cart", "lane": 1, "s": 2.2}, {"k": "crates", "lane": 0, "s": 0.5, "len": 0.6},
 		{"k": "coins", "shape": "line", "lane": 2, "row": 0, "s": 0.4, "n": 7, "step": 0.2},
 	]},
 	{"name": "three_way", "min_d": 100.0, "weight": 1.0, "length": 1.8, "items": [
@@ -59,8 +90,8 @@ const TEMPLATES: Array[Dictionary] = [
 		{"k": "fence", "lane": 0, "s": 1.8}, {"k": "fence", "lane": 1, "s": 1.8}, {"k": "fence", "lane": 2, "s": 1.8},
 		{"k": "coins", "shape": "jump", "lane": 1, "row": 0, "s": 1.5, "n": 7, "step": 0.12},
 	]},
-	{"name": "cart_pair", "min_d": 300.0, "weight": 0.8, "length": 2.4, "items": [
-		{"k": "cart", "lane": 0, "s": 1.0}, {"k": "cart", "lane": 2, "s": 1.3},
+	{"name": "cart_pair", "min_d": 300.0, "weight": 0.8, "length": 3.2, "items": [
+		{"k": "cart", "lane": 0, "s": 2.0}, {"k": "cart", "lane": 2, "s": 2.3},
 		{"k": "coins", "shape": "line", "lane": 1, "row": 0, "s": 0.4, "n": 8, "step": 0.2},
 	]},
 	# --- Arcane row 1 (from 150 m): short segments ----------------------------------
@@ -182,7 +213,7 @@ static func instantiate(template: Dictionary, at: float, mirror: bool, next_id: 
 	for item: Dictionary in items:
 		var k: String = String(item["k"])
 		match k:
-			"fence", "beam", "crates", "cart", "carriage":
+			"fence", "log", "beam", "barrier", "crates", "wall", "cart", "carriage":
 				obstacles.append(_obstacle(item, at, mirror, next_id))
 			"coins":
 				_coins(item, at, mirror, next_id, out)
@@ -214,10 +245,20 @@ static func _obstacle(item: Dictionary, at: float, mirror: bool, next_id: Array)
 		&"fence":
 			o.length = MageTrack.FENCE_LEN
 			o.top = MageTrack.FENCE_TOP
+		&"log":
+			o.length = MageTrack.LOG_LEN
+			o.top = MageTrack.LOG_TOP
 		&"beam":
 			o.length = MageTrack.BEAM_LEN
 			o.base = MageTrack.BEAM_BASE
 			o.top = MageTrack.BEAM_TOP
+		&"barrier":
+			o.length = MageTrack.BARRIER_LEN
+			o.base = MageTrack.BARRIER_BASE
+			o.top = MageTrack.BARRIER_TOP
+		&"wall":
+			o.length = MageTrack.WALL_LEN
+			o.top = MageTrack.WALL_TOP
 		&"crates":
 			o.length = float(item.get("len", MageTrack.CRATE_MIN_LEN))
 			o.top = MageTrack.CRATE_TOP

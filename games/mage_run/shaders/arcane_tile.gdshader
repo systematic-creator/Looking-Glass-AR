@@ -2,6 +2,7 @@
 // additive cyan glow, glowing edges, carved rune glyphs, a scan sweep and a
 // soft flicker. INSTANCE_CUSTOM: x = fade (0..1, the box ends), y = cracked,
 // z = crumble progress (0..1), w = piece length (board m, for the glyphs).
+// Pieces slice in / out at the road's cut planes.
 // Compatibility-renderer safe (no screen textures, no depth reads).
 shader_type spatial;
 render_mode blend_add, unshaded, depth_draw_never, cull_disabled, shadows_disabled;
@@ -10,13 +11,18 @@ uniform vec4 color : source_color = vec4(0.3, 0.92, 1.0, 1.0);
 uniform vec4 crack_color : source_color = vec4(1.0, 0.32, 0.28, 1.0);
 uniform float intensity = 1.0;
 uniform float width = 0.068;
+// The road's cut planes (world space; see solid_cut.gdshader).
+uniform vec4 cut_near = vec4(0.0, 0.0, 1.0, 1.0e6);
+uniform vec4 cut_far = vec4(0.0, 0.0, -1.0, 1.0e6);
 
 varying vec3 local;
 varying vec4 custom;
+varying vec3 world_pos;
 
 void vertex() {
 	local = VERTEX;
 	custom = INSTANCE_CUSTOM;
+	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 float hash(float n) {
@@ -36,6 +42,9 @@ float rune(vec2 p, float id) {
 }
 
 void fragment() {
+	if (dot(cut_near.xyz, world_pos) > cut_near.w || dot(cut_far.xyz, world_pos) > cut_far.w) {
+		discard;
+	}
 	float len = max(custom.w, 0.01);
 	vec2 uv = vec2(local.x + 0.5, local.z + 0.5);
 	float ex = min(uv.x, 1.0 - uv.x) * width;

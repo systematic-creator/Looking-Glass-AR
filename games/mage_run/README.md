@@ -1,9 +1,11 @@
 # Mage Run
 
 A medieval fantasy three-lane endless runner for Looking Glass: a wizard in
-a blue robe and a starry hat runs down a storybook diorama road toward a
-castle, dodging fences, banners, crate stacks, barrel mine-carts and royal
-carriages with swipes, and grabbing gold star coins. Two glowing hologram
+a blue robe and a starry hat runs down a storybook diorama road that is cut
+off clean at both ends of the board. Obstacles come in four classes, read
+by shape: jump (fences, logs), duck (banner beams), either (striped
+barriers: jump or slide) and dodge (stone walls, crate stacks, barrel
+mine-carts, royal carriages). Gold star coins line the road. Two glowing hologram
 **arcane rows** (3 lanes each, 9 lanes with the road) appear above the road
 from 150 m and 400 m; coins up there are worth x2 / x3.
 
@@ -23,7 +25,7 @@ Design: [docs/mage-run.md](../../docs/mage-run.md). The images in
 
 ## Files
 
-- `manifest.tres`: 30 x 60 cm board, tall box 40 cm (adjustable to 70 cm),
+- `manifest.tres`: 30 x 90 cm board (1 run m = 20 cm), tall box 40 cm (adjustable to 70 cm),
   `orientation = "either"` (a first-run hint suggests holding the phone
   upright).
 - `mage_run_game.gd`: the `LGGame`: visuals, HUD, pause / countdown, game
@@ -35,7 +37,7 @@ Design: [docs/mage-run.md](../../docs/mage-run.md). The images in
   shape rules).
 - `scripts/mage_generator.gd`: seeded generator (validated chunks only).
 - `scripts/mage_props.gd`: every model, built in code.
-- `shaders/`: arcane tiles, the castle gate portal, the scrolling road,
-  the blob shadow.
+- `shaders/`: arcane tiles, the solid and glow materials that cut items
+  off at the road ends, the scrolling road, the blob shadow.
 
 No audio yet (out of scope for the first playable).
