@@ -448,18 +448,21 @@ outline, and solid debris shrinks away instead of fading. Game UI buttons
 are not board touches (`LGGame.is_over_game_ui(screen)`).
 
 **Mage Run** (`games/mage_run/`, `tall_box`, `orientation = "either"`, best
-upright) is a medieval endless runner on a 30 x 60 cm board with a 40 cm
+upright) is a medieval endless runner on a 30 x 90 cm board with a 40 cm
 airspace (adjustable to 70 cm). A wizard in a blue robe and starry hat runs
-toward a castle while the road scrolls under him; carts, crate stacks,
-fences, banner beams and royal carriages emerge from the castle's portal
-gate and shrink away at the near edge, so nothing leaves the box. Swipes
+while the road scrolls under him. The road is cut off clean at both ends of
+the board: obstacles slice into view at the far cut and out at the near
+cut (shader cut planes), so nothing leaves the box. Obstacles come in four
+classes, read by shape: jump (fences, logs), duck (banner beams), either
+(striped barriers) and dodge (stone walls, crate stacks, rolling carts,
+royal carriages). Swipes
 (the platform's `captures_swipes()` / `_on_swipe`): left / right change lane,
 up jumps (and climbs onto an arcane row), down slides, drops a row or slams
 down mid-air; swipes are buffered 0.15 s and there is 0.08 s of coyote
 grace. Two translucent cyan hologram rows of 3 lanes each unlock at 150 m
 and 400 m, with ramps, jump-up tiles and (from 800 m) cracked tiles that
 crumble; their coins count x2 and x3. Speed rises from 1.2 to 2.6 run m/s.
-Chunks come from 19 hand-made templates; a seeded generator only uses a
+Chunks come from 24 hand-made templates; a seeded generator only uses a
 chunk if the validator finds a safe path into and through it. Coins fill the
 staff meter; a double tap or the staff button casts Shield, Magnet or
 Levitation in turn. Turning the phone (or Pause) pauses, and Resume counts
@@ -582,13 +585,15 @@ dominant axis, fire on threshold, slow strokes, S-strokes, taps, two
 fingers, the input buffer, routing through GameHost), `mage_run_tests`
 (Mage Run: units and unlock distances, the manifest and box, lane changes,
 reverse and edge bumps, jump height and time, the input buffer and coyote
-grace, slide / slam / drop, each obstacle's one answer, carts rolling out of
-the gate, carriage roofs, stumbles and the second-stumble crash, arcane rows
+grace, slide / slam / drop, the four obstacle classes (each kind's answers in
+the sim and the validator, and unfair layouts rejected), carts rolling in
+at the far cut, the road cut clean at both ends with items slicing across
+the cuts, carriage roofs, stumbles and the second-stumble crash, arcane rows
 (landing on a tile, row lanes, Arcane II, x2 / x3 coins, running off the
 end), cracked tiles and ramps, scoring and multipliers, staff power-ups, all
 templates fair, the validator rejecting unfair shapes, 2 x 1000 m of
 generated track checked chunk by chunk and join by join, swipes through the
-host, the lane flip seen from the castle end, pause by button / rotation /
+host, the lane flip seen from the far end, pause by button / rotation /
 app with the countdown, game over / restart / session best, the first-run
 hint, the HUD in portrait and landscape, everything inside the box, and the
 triangle budget). `view_tests` also

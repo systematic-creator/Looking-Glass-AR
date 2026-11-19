@@ -42,9 +42,11 @@ code or comes from a CC0 source (see [Assets and licensing](#assets-and-licensin
 
 A wizard in a blue robe and a starry pointy hat runs down a cobblestone and
 plank road on a small **storybook diorama** that sits on the player's real
-table or floor, away from the player toward a stone castle at the far end.
-Royal carriages, crates, barrel mine-carts and wooden fences stream toward
-the player. The player dodges them with fast swipes (left / right to change
+table or floor, away from the player. The road has no building at either
+end: it is **cut off clean** at the board's far and near edges, and
+obstacles slice into view at the far cut. Fences and logs to jump, banners
+to slide under, striped barriers to jump or slide, and walls, crates,
+barrel mine-carts and royal carriages to dodge stream toward the player. The player dodges them with fast swipes (left / right to change
 lane, up to jump, down to slide) and grabs gold star coins. As the run goes
 on, **glowing cyan hologram rune-stone platforms** appear *above* the solid
 road: the two **arcane rows**. They are new rows of lanes (3 lanes each, so
@@ -58,7 +60,8 @@ hologram floors that stack up the further you get.*
 Pillars:
 
 1. **Swipe timing first.** Inputs are buffered and forgiving, and every
-   obstacle shows clearly what it needs (jump, slide or a lane change).
+   obstacle shows clearly what it needs by its shape (four classes: jump,
+   duck, either, dodge; section 5).
 2. **Readable at table size.** The whole run fits in a small play box seen
    from about 0.5-1 m away; silhouettes and colour do the work, not detail.
 3. **Solid world, arcane rows.** The opaque warm diorama is the ground
@@ -74,26 +77,27 @@ Pillars:
 ### Footprint and orientation
 
 - The road runs along the board's **long axis, away from the player**
-  (board space -Z is "ahead", toward the castle; +Z is the near end where the
+  (board space -Z is "ahead", toward the far cut; +Z is the near end where the
   wizard runs, toward the player).
-- **Suggested `board_size`: 0.30 m x 0.60 m** (x = width, z = depth) at
-  placement scale 1. On a table that is a 30 x 60 cm diorama. On the floor
-  the player scales it up (the platform's placement scale), for example x3
-  to 0.9 x 1.8 m.
+- **`board_size`: 0.30 m x 0.90 m** (x = width, z = depth) at placement
+  scale 1 (as built; first proposed 0.30 x 0.60 m, lengthened for reaction
+  distance). On a table that is a 30 x 90 cm diorama. On the floor the
+  player scales it up (the platform's placement scale), for example x3 to
+  0.9 x 2.7 m.
 - The road (3 lanes) is about 0.22 m wide, on a rounded stone base 0.28 m
   wide, leaving a thin margin of base and grass to the footprint edge.
 
 ### Play box
 
 - Manifest uses **`tall_box = true`**: the cap is `min(3.0 m, 4 x long side)`
-  = 2.4 m for a 0.6 m board. Mage Run does not need that much; it wants
+  = 3.0 m for a 0.9 m board. Mage Run does not need that much; it wants
   headroom for the 2 arcane rows and jump arcs.
 - **Airspace: `box_height` 0.40 m, `box_min_height` 0.40 m,
   `box_max_height` 0.70 m** (as built: the minimum is 0.40 m because a jump
   from Arcane II with the hat on reaches 0.20 + 0.11 + 0.072 m above the
   0.008 m base). Rows sit at fixed fractions of the default
   layout (see section 3), so a lower box only trims the sky above the top row
-  (the castle top, particles).
+  (jump arcs, particles).
 - `board_height` 0.25 m (camera framing in "Play without AR").
 - `box_outline_while_playing()` returns about **0.15** (at most a faint
   outline; the brief asks for at most that).
@@ -101,28 +105,27 @@ Pillars:
 ### Streaming and the box edge
 
 - The world is a treadmill: the wizard stays near the **near third** of the
-  board (z about +0.18 m) and the world scrolls toward +Z.
-- Content spawns at the far end (z about -0.30 m, behind the castle gate)
-  and is removed at the near end (z about +0.30 m).
-- **Dissolve at the box edge:** solid props fade and shrink over the last
-  4 cm before the near edge and the first 4 cm after spawning: a dither or
-  alpha ramp in the solid shader, with a cyan "dissolve" rim so it reads as
-  magic, not popping. Hologram platforms fade their intensity the same way.
-  Nothing is ever drawn outside `PlayBox.contains()` (tests assert this, as
-  with Stack Tower debris).
-- The **castle** is a fixed backdrop at the far end, inside the box,
-  slightly scaled down (forced perspective). The road appears to run into its
-  gate, which hides the spawn point.
+  board (z +0.30 m on the 0.90 m board) and the world scrolls toward +Z.
+- **Clean cut (as built):** there is no castle or gate. The stone base and
+  road end with a hard edge at the **far cut** (z -0.445 m) and the **near
+  cut** (z +0.445 m). Every content material (props, coins, tiles, ramps)
+  is a shader that discards fragments beyond the two cut planes (world-space
+  planes updated each frame from the board transform), so an item **slices
+  in** at the far cut as it scrolls onto the road and **slices out** at the
+  near cut, at full size, like a cross-section. Items are created a little
+  beyond the far cut (out of sight) and removed after passing the near cut.
+  Nothing is drawn outside `PlayBox.contains()` (tests check the clipped
+  bounds of every item, as with Stack Tower debris).
 
 ### Placement flow
 
 - The standard Looking Glass calibration: trace or pick a surface, fit
   edges, adjust the airspace, lock. Mage Run adds nothing.
-- The default rotation puts the far end (castle) **away from the player**:
+- The default rotation puts the far cut **away from the player**:
   the board's -Z faces away from the camera at Lock. If the player rotated
   the board, the game still runs along board -Z (the player chose the view).
 - Recommended AR viewing: phone in **portrait**, held at chest height, about
-  0.6-0.9 m from a table diorama, looking down 25-40 degrees.
+  0.7-1.0 m from a table diorama, looking down 25-40 degrees.
 
 ---
 
@@ -144,7 +147,7 @@ Pillars:
   (one tile per lane per segment, about 0.075 x 0.10 m), floating above the
   road.
 - Heights: row 1 (Arcane I) at **+0.10 m**, row 2 (Arcane II) at
-  **+0.20 m**. With jump arcs and the castle top this fits the 0.40 m default
+  **+0.20 m**. With jump arcs this fits the 0.40 m default
   box with room to spare.
 - **Unlock by distance** (in metres run, world units at scale 1; tuned in
   playtests):
@@ -254,15 +257,21 @@ not depend on where the board is on screen or on the AR camera angle.
 
 ### Obstacle types
 
-Each obstacle needs exactly one answer, shown by its shape:
+As in Subway Surfers, every ground obstacle belongs to one of **four
+classes**, and its shape says which (`MageTrack.obstacle_class()`; the
+validator checks each class against the real move set at the base and top
+speeds, section 6):
 
-| Obstacle | Answer | Look |
-| --- | --- | --- |
-| **Wooden fence** (low, 1 lane) | Jump | Brown posts and rails, about 0.035 m high |
-| **Hanging banner / beam** (1 lane) | Slide | A wooden beam on two posts with a royal blue banner |
-| **Crate stack** (1-2 lanes, tall) | Change lane | Stacked crates, rope-bound |
-| **Barrel mine-cart** (moving) | Change lane (it rolls toward you, faster than the road) | Wooden cart full of barrels, on a short rail stretch |
-| **Royal carriage** (2 lanes wide, tall) | Change lane, or jump onto its roof (a "platform" obstacle) | Gold and white carriage with blue crystals; the roof is walkable |
+| Class | Obstacle | Answer | Look (board size at scale 1) |
+| --- | --- | --- | --- |
+| **Jump** | **Wooden fence** (1 lane) | Jump only (it is too low to slide under) | Brown posts and rails, 3.5 cm high |
+| **Jump** | **Fallen log** (1 lane) | Jump only | A round log on the road, 3.2 cm high |
+| **Duck** | **Hanging banner / beam** (1 lane) | Slide only (the gap is 3.5 cm high; a jump hits the beam) | A wooden beam on two posts with a royal blue banner, top 13 cm |
+| **Either** | **Striped barrier** (1 lane) | Jump over **or** slide under | A red and white striped board on two legs, from 3.5 to 6.2 cm |
+| **Dodge** | **Stone wall** (1 lane) | Change lane | A grey stone wall section with a blue banner, 14 cm high |
+| **Dodge** | **Crate stack** (1-2 lanes, long) | Change lane | Stacked crates, rope-bound, 9 cm high |
+| **Dodge** | **Barrel mine-cart** (moving) | Change lane (it rolls toward you at 0.4 run m/s, faster than the road) | Wooden cart full of barrels |
+| **Dodge** | **Royal carriage** (2 lanes wide, tall) | Change lane, or jump onto its roof (a "platform" obstacle; reachable from the ground only near top speed) | Gold and white carriage with blue crystals; the roof is walkable |
 | **Rune gap** (arcane rows only) | Jump, or drop | A missing tile |
 | **Cracked rune tile** | Do not stop on it (crumbles after 0.4 s) | Flickering red-tinted rune |
 
@@ -277,7 +286,7 @@ Gold star coins (spinning, about 0.02 m) come in lines of 5-12:
 
 - **Straight line** in a lane (safe, low value).
 - **Lane weave** (a curve across lanes) that teaches lane changes.
-- **Jump arc** over a fence (coins at the apex reward good timing).
+- **Jump arc** over a fence or log (coins at the apex reward good timing).
 - **Ramp arc** from the ground up onto an arcane row (the main risk-reward:
   up there coins are worth **x2 on row 1 and x3 on row 2**, but tiles may
   crack and segments end).
@@ -313,8 +322,8 @@ meter, as in Subway Surfers.
 
 ### Speed curve
 
-- Base speed **1.2 m/s** (world units; on a 0.6 m board, one board length
-  every 0.5 s), rising to **2.6 m/s** at about 2000 m:
+- Base speed **1.2 m/s** (run metres; with 0.20 board m per run metre the
+  road moves 24 cm/s on the board), rising to **2.6 m/s** at about 2000 m:
   `speed = 1.2 + 1.4 * (1 - exp(-distance / 900))`.
 - Spawn density, obstacle mix and row frequency step up at the distance
   thresholds in section 3.
@@ -339,28 +348,33 @@ meter, as in Subway Surfers.
 1. There is **always at least one safe path** through every chunk *and*
    across chunk joins. The validator walks a lane x row state machine with
    the player's actual move set and timings at the chunk's max speed.
-2. **Reaction time:** a new obstacle is fully visible (out of the spawn
-   dissolve) at least **0.75 s** before the wizard reaches it at current
-   speed. At 2.6 m/s that means it is solid 1.95 m ahead, so on a 0.6 m
-   board the far spawn must sit at least 3 board lengths of world distance
-   ahead. The treadmill compresses this visually: see the *open question* on
-   world-to-board scale.
+2. **Reaction time:** a new obstacle is visible (past the far cut) at
+   least **1.0 s** before the wizard reaches it at the current speed
+   (as built: 1.24 s at 2.6 m/s against a cart; the first proposal was
+   0.75 s).
 3. **At most two consecutive inputs** required within 0.35 s.
 4. **No blind lane changes:** a lane is never blocked in a way only visible
    from directly behind.
 5. **Arcane-row segments** end over at least 0.25 s of clear ground.
 6. **Cracked tiles** only appear with an intact tile within one lane change.
 7. **No unbeatable coin lines** (section 5).
+8. **Obstacle classes are honest** (as built): a jump obstacle can be
+   jumped and not slid, a duck obstacle slid and not jumped, an either
+   obstacle both, and a dodge obstacle neither (only the carriage roof may
+   be jumped onto). Templates that break their class are rejected, and
+   layouts with no lane free of dodge obstacles at a given moment are
+   rejected by the safe-path search.
 
 ### World scale vs board scale
 
 The gameplay world is measured in "run metres", and the board shows a
-window onto it. **As built: 1 run metre = 0.16 m of board depth** at
-placement scale 1 (`MageTrack.RUN_TO_BOARD`; the first proposal was 0.25).
-Items emerge from the castle gate (z -0.19) and the wizard runs at
-z +0.175, so 2.28 run metres are visible ahead: at the 2.6 m/s top speed
-with a cart rolling at 0.4 m/s that is 0.76 s, just over the 0.75 s
-reaction rule (a unit test checks it). The speed numbers above are in run
+window onto it. **As built: 1 run metre = 0.20 m of board depth** at
+placement scale 1 (`MageTrack.RUN_TO_BOARD`; the first build used 0.16,
+the first proposal 0.25). Items slice in at the far cut (z -0.445) and the
+wizard runs at z +0.30, so 3.7 run metres are visible ahead: at the 2.6 m/s
+top speed with a cart rolling at 0.4 m/s that is 1.24 s, over the 1.0 s
+reaction rule (a unit test checks it). Obstacles are 25% larger on the
+board than in the first build. The speed numbers above are in run
 metres per second.
 
 ---
@@ -387,8 +401,8 @@ metres per second.
 - **Solid** (the default for the world): opaque, softly lit, stylized
   low-poly with warm colours: cobblestones (grey-beige), planks (honey
   brown), a rounded grey stone base with moss green edges, a gold and white
-  carriage with blue crystals, red-brown crates, dark barrels, a light grey
-  stone castle with blue-slate roofs.
+  carriage with blue crystals, red-brown crates, dark barrels, grey stone
+  walls, red and white striped barriers.
 - **Arcane rows**: translucent, additive-glow cyan rune-stone tiles using
   the platform's Holo kit (`Holo.material`, edge lines, scanlines and
   sweep) with carved rune glyphs (procedural decals) and a soft flicker.
@@ -399,7 +413,7 @@ metres per second.
   particle ribbon behind the feet, using `HoloSplash`-style additive motes).
 - **No side rows of houses**, no walls or skybox. Beyond the stone base it
   is the real room (AR camera image) or the platform's plain backdrop
-  outside AR. The castle is the only tall prop, at the far end.
+  outside AR. The road just stops at a clean cut at each end.
 - **At most a faint box outline** (about 0.15) while playing.
 
 ### Ties to the Hologram / Solid style system
@@ -610,7 +624,7 @@ headless suites `orientation_tests`, `swipe_tests` and the portrait cases in
 | `swipe_tests` (new) | Thresholds in inches at 160 / 420 dpi and in portrait; dominant axis; fire on threshold; slow strokes; S-strokes; taps not swipes; two fingers; the buffer; routing through `GameHost` (no orbit, taps kept, nothing while paused) |
 | `orientation_tests` (new) | Manifest field and validation; apply on load / restore on exit (OS call recorded); simulated rotations (root window 2340x1080 <-> 1080x2340): base swap, one callback per turn, UI fade; every HUD inside the screen without overlaps in both shapes (host, AR calibration steps, debug line, Stack Tower, launcher); AR: ARCore told the rotation, portrait passthrough on the background canvas, board and anchor unmoved, cell taps exact before / after; reverse landscape; landscape-only plugin builds |
 | `view_tests` (extended) | Portrait: ARCore's rotated centre crop drawn through the passthrough shader's UV interpolation, content on the video pixel (< 1 px) and taps hitting (< 2 mm); the unrotated landscape feed would be off by more than 100 px |
-| `mage_run_tests` (M4+) | Lane / row state machine; jump to row; ramp; drop; collapsing tile; coyote and buffer; collision and stumble; chunk validator (always a safe path, reaction time, join rules); seeded generation is deterministic; score and multiplier; power-ups; everything inside the box; dissolve at the box edges; pause / resume and the rotation pause with countdown; Style toggle |
+| `mage_run_tests` (M4+) | Lane / row state machine; jump to row; ramp; drop; collapsing tile; coyote and buffer; collision and stumble; chunk validator (always a safe path, reaction time, join rules, obstacle classes: jump / duck / either / dodge); seeded generation is deterministic; score and multiplier; power-ups; everything inside the box; the clean road cuts (items slice across both cuts); pause / resume and the rotation pause with countdown; Style toggle |
 
 ### 10.6 Device checks still needed
 
@@ -639,9 +653,9 @@ Headless tests cannot run ARCore or the GPU path, so on a phone check:
 | **M2** | Platform: ARCore display rotation (plugin patch), portrait passthrough, registration, `view_tests` portrait | Taps land on the right cell in portrait AR (field test) | **Done** on `mage-run` (headless); field test pending |
 | **M3** | Platform: `SwipeDetector` + `captures_swipes()` / `_on_swipe`, `SwipeBuffer`, `swipe_tests` | Swipes at 160 / 420 dpi pass | **Done** on `mage-run` |
 | **M4** | Mage Run greybox: board, box, treadmill, 3 ground lanes, lane change / jump / slide with buffering, boxes for obstacles, collision, game over / restart, score, rotation pause + countdown | Playable on the phone, best in portrait | **Done** on `mage-run` (headless; device check pending) |
-| **M5** | Chunks + validator + seeded generator, difficulty curve, coin lines | Validator proves a safe path for every template | **Done** (19 templates; 2 x 1000 m generated per test run) |
+| **M5** | Chunks + validator + seeded generator, difficulty curve, coin lines | Validator proves a safe path for every template | **Done** (24 templates; 2 x 1000 m generated per test run) |
 | **M6** | Arcane rows (2 rows x 3 lanes): tiles, ramps, jump-to-row, drop, collapsing tiles, row coin multipliers | Rows unlock at the distance thresholds | **Done** |
-| **M7** | Art pass: procedural wizard, props, road, castle, sparkle trail, dissolve; budget check on device | <= 120 draw calls, 60 fps on the target phone | **First pass done** (about 50 draw calls, 5-7k triangles in desktop captures); device fps pending |
+| **M7** | Art pass: procedural wizard, props, road, sparkle trail, clean cut; budget check on device | <= 120 draw calls, 60 fps on the target phone | **First pass done** (about 50 draw calls, 5-7k triangles in desktop captures); device fps pending |
 | **M8** | Staff meter + power-ups, HUD (coins, score, pause, staff, arcane row indicator), Hologram / Solid world toggle | **First playable** (silent) | **Mostly done**: meter, Shield / Magnet / Levitation, HUD in both orientations; the Hologram / Solid world toggle is deferred |
 | **M9** | Audio helper + SFX / music (CC0) | | Later: out of scope for the first playable |
 | **M10** | Polish, tuning, release build, field test | | |
@@ -651,19 +665,20 @@ Headless tests cannot run ARCore or the GPU path, so on a phone check:
 - **Code:** `games/mage_run/`: `mage_run_game.gd` (the `LGGame`: visuals,
   HUD, flow), `scripts/mage_track.gd` (units, item types, physics
   constants), `mage_run_sim.gd` (the run, no nodes), `mage_chunks.gd`
-  (19 templates), `mage_validator.gd` (safe-path search + shape rules),
+  (24 templates), `mage_validator.gd` (safe-path search, shape and class
+  rules),
   `mage_generator.gd` (seeded, validated chunks, optional worker thread),
-  `mage_props.gd` (every model in code), `shaders/` (arcane tiles, gate
-  portal, scrolling road, blob shadow).
+  `mage_props.gd` (every model in code), `shaders/` (arcane tiles, the
+  cut solid and glow materials, scrolling road, blob shadow).
 - **Fairness:** the sim and the validator share one physics model (exact
   jump parabola, so the same 11 cm apex at any frame rate). Every chunk is
   validated with the previous one from the previous chunk's possible lanes;
-  rejects fall back to a breather. Each obstacle has one vertical answer
-  (fence: jump, beam: slide; crates, carts and carriages: change lane), the
-  roof of a carriage is walkable but the validator never relies on it.
-- **Containment:** items are created hidden inside the closed castle and
-  emerge through the opaque portal; at the near end they shrink to nothing
-  over the last 3 cm. `mage_run_tests` asserts every prop, tile, coin, the
+  rejects fall back to a breather. Each obstacle has a class (jump: fence,
+  log; duck: beam; either: barrier; dodge: wall, crates, cart, carriage),
+  checked by the validator; the roof of a carriage is walkable but the
+  validator never relies on it.
+- **Containment:** the road is cut clean at both ends; items slice in at
+  the far cut and out at the near cut (shader cut planes). `mage_run_tests` asserts every prop, tile, coin, the
   wizard and the scenery stay inside `PlayBox.contains()`.
 - **Flow:** 3-2-1 countdown at start and on every resume; the Pause
   button, a phone turn and the app pausing all pause; game over shows the
@@ -690,12 +705,10 @@ Headless tests cannot run ARCore or the GPU path, so on a phone check:
 
 ### Still open
 
-2. **World scale** (answered for now by the build: 0.16 m per run metre,
-   see section 6). Earlier question: is 1 run metre = 0.25 m right? Real
-   Subway Surfers reaction distances need a long visible road; on a 60 cm
-   diorama the far end is only about 2.4 run metres away. Options: a longer
-   board (0.3 x 0.9 m), compressed perspective toward the castle, or slower
-   top speeds.
+2. **World scale** (answered for now by the build: a 30 x 90 cm board at
+   0.20 m per run metre, 3.7 run metres visible, see section 6). Still to
+   confirm on a phone: is it readable at arm's length, and is 90 cm too
+   long for common tables (players can scale the board down)?
 5. **Taps**: offer "Tap to jump / side taps to change lane" as an
    accessibility mode?
 6. **Power-up choice**: is the cast power-up automatic (chosen by the
