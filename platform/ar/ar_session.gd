@@ -94,6 +94,24 @@ const PLANE_UPGRADE_INTERVAL: float = 1.0
 ## At Lock the plane anchor must land this close (m, horizontally) to the
 ## point under the board it was asked for.
 const LOCK_ANCHOR_REACH: float = 0.02
+## Anchor pose changes smaller than this (m / rad) are ignored (sensor noise).
+const POSE_DEADBAND: float = 0.001
+const POSE_DEADBAND_TURN: float = 0.002
+## Tracking-loss recovery: after the anchor has been lost this long (s) a
+## tracked plane matching the play area (same height within
+## PLANE_HEIGHT_TOLERANCE, outline overlapping by RECOVER_OVERLAP) re-anchors
+## the board on it; after RECOVER_OFFER_SECONDS "Re-place on table" is
+## offered (keeps the fitted outline, no re-tracing).
+const RECOVER_MATCH_SECONDS: float = 1.5
+const RECOVER_OVERLAP: float = 0.5
+const RECOVER_OFFER_SECONDS: float = 4.0
+## Fewer feature points than this for LOW_FEATURE_SECONDS while placed shows
+## the "more light helps" hint.
+const LOW_FEATURE_POINTS: int = 40
+const LOW_FEATURE_SECONDS: float = 2.0
+## A PLANE play area is replaced by ARCore's refined plane only when it grew
+## by this fraction (no shimmering outline while adjusting).
+const PLANE_REGION_GROWTH: float = 0.15
 ## Drag rays flatter than this (|dot(ray, up)|) are ignored: near the horizon
 ## a finger's pixel moves the board metres.
 const MIN_RAY_ELEVATION: float = 0.12
@@ -201,6 +219,27 @@ var _upgrade_elapsed: float = 0.0
 ## plane's height (XROrigin3D space; follows accepted world shifts / fixes).
 var locked_on_plane: bool = false
 var lock_plane_height: float = NAN
+## Tracking-loss recovery / low-light state (see _update_tracking_loss).
+var anchor_lost_seconds: float = 0.0
+var recoveries: int = 0
+var low_features: bool = false
+var _low_feature_seconds: float = 0.0
+var _recover_elapsed: float = 0.0
+var _loss_status: String = ""
+## Feature points on the play area: median height over the plane under the
+## board (m, NAN if too few points) and how many were used.
+var feature_gap: float = NAN
+var feature_count: int = 0
+## Debug overlay while placed: feature points, a cross at the raw anchor and
+## a cross fixed in world space where the board was placed (never moved).
+var _debug_overlay: Node3D
+var _debug_points: MultiMeshInstance3D
+var _anchor_marker: Node3D
+var _world_marker: Node3D
+## The fitted outline's shape around the board centre (world axes), the
+## board's world yaw and scale: "Re-place on table" puts it back at the
+## reticle (survives Re-place and switching games, like saved_area_world).
+static var saved_shape: Dictionary = {}
 ## Index (in this frame's plane list) and height of the plane under the board.
 var surface_plane: int = -1
 var surface_plane_height: float = NAN
@@ -223,6 +262,7 @@ var _lost_seconds: float = 0.0
 
 static func clear_saved_area() -> void:
 	saved_area_world = PackedVector3Array()
+	saved_shape = {}
 
 
 ## Pick a mode from what the runtime offers (pure, unit-tested).
@@ -382,6 +422,7 @@ func _enter_ar() -> void:
 	hud.magnify_toggled.connect(func(on: bool) -> void: magnify_enabled = on)
 	hud.recenter_pressed.connect(recenter)
 	hud.replace_pressed.connect(begin_replace)
+	hud.replace_keep_pressed.connect(replace_on_table)
 	hud.place_pressed.connect(func() -> void: place_at_reticle())
 	hud.place_in_front_pressed.connect(func() -> void: place_in_front())
 	hud.play_without_ar_pressed.connect(func() -> void: fall_back("Player chose to play without AR."))
@@ -543,6 +584,11 @@ func _after_placed() -> void:
 		_overlay.visible = false
 	world_anchor.visible = true
 	_apply_transforms()
+	# The plane the board sits on (the height guard keeps it there).
+	var under: Dictionary = plane_under(board_origin_point())
+	locked_on_plane = not under.is_empty() and absf(float(under["gap"])) <= PLANE_HEIGHT_TOLERANCE
+	lock_plane_height = float(under["height"]) if locked_on_plane else NAN
+	_place_world_marker()
 	if hud != null:
 		hud.apply_flow(flow)
 	board_placed.emit()
@@ -562,11 +608,14 @@ func begin_replace() -> void:
 	phase = Phase.SEARCHING
 	placement.locked = false
 	flow.restart()
+	flow.shape_pending = false
 	fitter = EdgeFitter.new()
 	_fit_handle = {}
 	_reset_drift()
 	_has_lock_origin = false
 	board_hidden_by_loss = false
+	flow.recover_offer = false
+	_loss_status = ""
 	world_anchor.visible = false
 	if _overlay != null:
 		_overlay.visible = true
@@ -596,6 +645,7 @@ func set_locked(locked: bool) -> void:
 		locked_on_plane = not under.is_empty() and absf(float(under["gap"])) <= PLANE_HEIGHT_TOLERANCE
 		lock_plane_height = float(under["height"]) if locked_on_plane else NAN
 		_height_bad_seconds = 0.0
+		_remember_shape()
 	placement.locked = locked
 	placement.save(placement_path)
 	gestures.reset()
@@ -715,9 +765,21 @@ func reanchor_board(at_anchor: Transform3D, target_y: float, reason: String, all
 			var q: Vector3 = to_new * Vector3(p.x, 0.0, p.y)
 			moved.append(Vector2(q.x, q.z))
 		_set_region(SurfaceRegion.make(moved, region.source))
+	if fitter != null and fitter.is_active():
+		var to_fit: Transform3D = anchors.pose.affine_inverse() * old_anchor
+		fitter.polygon = _moved_polygon(fitter.polygon, to_fit)
+		fitter.original = _moved_polygon(fitter.original, to_fit)
 	_drift_have_prev = false
 	_apply_transforms()
 	return true
+
+
+static func _moved_polygon(polygon: PackedVector2Array, xform: Transform3D) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for p: Vector2 in polygon:
+		var q: Vector3 = xform * Vector3(p.x, 0.0, p.y)
+		out.append(Vector2(q.x, q.z))
+	return out
 
 
 ## Put the world anchor at `anchor_pose` (XROrigin3D space, made upright).
@@ -737,10 +799,18 @@ func _apply_transforms(delta: float = -1.0) -> void:
 		_trusted_pose = anchors.pose
 		jump_holding = false
 	else:
-		shown_pose = ease_pose(shown_pose, _trusted_pose if jump_holding else anchors.pose, delta)
+		var target: Transform3D = _trusted_pose if jump_holding else anchors.pose
+		if not _within_deadband(shown_pose, target):
+			shown_pose = ease_pose(shown_pose, target, delta)
 	apply_anchor_pose(shown_pose)
 	if pivot != null:
 		pivot.transform = placement.pivot_transform()
+
+
+static func _within_deadband(a: Transform3D, b: Transform3D) -> bool:
+	if a.origin.distance_to(b.origin) > POSE_DEADBAND:
+		return false
+	return absf(a.basis.get_rotation_quaternion().angle_to(b.basis.get_rotation_quaternion())) <= POSE_DEADBAND_TURN
 
 
 ## Follow an anchor correction: small ones (ARCore refining) snap, big
@@ -804,8 +874,12 @@ func _process(delta: float) -> void:
 	_update_tracking_loss(delta)
 	if refresh:
 		surface_gap = measure_surface_gap()
+		_measure_feature_gap()
+		_update_debug_overlay()
 	if not front_follow:
 		_update_height_guard(delta)
+		_update_recovery(delta)
+	_update_low_features(delta)
 	if flow.step == CalibrationFlow.Step.FITTING and hud != null:
 		hud.fit_handles.set_handles(fit_handle_screens(), _active_handle_slot())
 	if region != null and region.source == SurfaceRegion.Source.PLANE and not placement.locked and flow.step != CalibrationFlow.Step.FITTING:
@@ -813,7 +887,7 @@ func _process(delta: float) -> void:
 		if _region_refresh >= 1.0:
 			_region_refresh = 0.0
 			var grown: SurfaceRegion = select_plane_region(anchors.pose.origin)
-			if grown != null:
+			if grown != null and (region == null or grown.area() > region.area() * (1.0 + PLANE_REGION_GROWTH)):
 				_set_region(grown)
 
 
@@ -1112,6 +1186,7 @@ func _commit_fit() -> void:
 	flow.has_saved_area = true
 	_fit_handle = {}
 	_constrain_board()
+	_remember_shape()
 
 
 ## Keep the board inside the (new) play area: slide it in, or fit a smaller
@@ -1509,8 +1584,17 @@ func finish_trace() -> bool:
 
 
 ## "Use traced area": reuse this session's last outline (e.g. another game).
+## Reuse the last outline where it was (same session, e.g. another game).
+## After "Re-place on table" (its world coordinates may be stale after a
+## tracking loss) the fitted outline's shape is put back around the reticle
+## instead (needs a surface under the reticle).
 func use_saved_area() -> bool:
-	if not is_ar() or phase == Phase.PLACED or saved_area_world.size() < 3:
+	if not is_ar() or phase == Phase.PLACED:
+		return false
+	if flow.shape_pending and not saved_shape.is_empty():
+		# After "Re-place on table": the old world coordinates are stale.
+		return flow.step == CalibrationFlow.Step.SURFACE_FOUND and place_saved_shape()
+	if saved_area_world.size() < 3:
 		return false
 	return _place_on_outline(saved_area_world)
 
@@ -1695,6 +1779,8 @@ func _reset_drift() -> void:
 	_drift_window = 0.0
 	_lost_seconds = 0.0
 	jump_holding = false
+	recoveries = 0
+	anchor_lost_seconds = 0.0
 	jumps_rejected = 0
 	jumps_accepted = 0
 	height_fixes = 0
@@ -1724,25 +1810,313 @@ func _track_drift(delta: float) -> void:
 
 
 ## Camera tracking lost: ARCore freezes the camera pose, so a visible board
-## would stick to the screen and slide over the real table. Hide it after
-## LOST_HIDE_SECONDS and say why; show it again when tracking is back.
+## would stick to the screen and slide over the real table. The board's
+## anchor not tracking (ARCore paused it, e.g. after the camera was covered,
+## while it tries to relocalize) means its pose is stale too. Either for
+## LOST_HIDE_SECONDS hides the board and says what to do; it comes back at
+## the anchor's pose once both track again.
 func _update_tracking_loss(delta: float) -> void:
-	var state: int = int(tracking_info.get("camera_state", 0))
-	if state != CalibrationFlow.CAMERA_TRACKING:
-		_lost_seconds += delta
-		if _lost_seconds >= LOST_HIDE_SECONDS and not board_hidden_by_loss:
-			board_hidden_by_loss = true
-			tracking_losses += 1
-			world_anchor.visible = false
-			if hud != null:
-				hud.set_status("Tracking lost. Point the phone back at the board and hold still.")
-	else:
+	var camera_ok: bool = int(tracking_info.get("camera_state", 0)) == CalibrationFlow.CAMERA_TRACKING
+	var anchor_ok: bool = front_follow or not anchors.has_anchor() or anchors.tracking == AnchorBackend.Tracking.TRACKING
+	if camera_ok and anchor_ok:
 		_lost_seconds = 0.0
+		anchor_lost_seconds = 0.0
 		if board_hidden_by_loss:
 			board_hidden_by_loss = false
 			world_anchor.visible = true
+			flow.recover_offer = false
+			_loss_status = ""
 			if hud != null:
 				hud.apply_flow(flow)
+		return
+	_lost_seconds += delta
+	if camera_ok and not anchor_ok:
+		anchor_lost_seconds += delta
+	if _lost_seconds >= LOST_HIDE_SECONDS and not board_hidden_by_loss:
+		board_hidden_by_loss = true
+		tracking_losses += 1
+		world_anchor.visible = false
+	if not board_hidden_by_loss:
+		return
+	var offer: bool = _lost_seconds >= RECOVER_OFFER_SECONDS
+	var text: String = loss_message(camera_ok, tracking_info, offer)
+	if offer != flow.recover_offer or text != _loss_status:
+		flow.recover_offer = offer
+		_loss_status = text
+		if hud != null:
+			hud.apply_flow(flow)
+			hud.set_status(text)
+
+
+## What to tell the player while the board is hidden by a tracking loss.
+static func loss_message(camera_ok: bool, info: Dictionary, offer: bool) -> String:
+	var text: String
+	if not camera_ok:
+		text = "Tracking lost. Point the phone back at the table and move it slowly."
+		match int(info.get("failure_reason", 0)):
+			CalibrationFlow.FAILURE_INSUFFICIENT_LIGHT:
+				text = "Tracking lost: too dark. Turn on a light, then point at the table."
+			CalibrationFlow.FAILURE_EXCESSIVE_MOTION:
+				text = "Tracking lost: moving too fast. Hold still, then move slowly."
+			CalibrationFlow.FAILURE_INSUFFICIENT_FEATURES:
+				text = "Tracking lost: not enough detail. Point at the table and its surroundings."
+	else:
+		text = "Re-finding the table… point at where the board was and move slowly from side to side."
+	if int(info.get("points", 100)) < LOW_FEATURE_POINTS:
+		text += " More light helps."
+	if offer:
+		text += "\nStill lost? Tap Re-place on table: your outline is kept."
+	return text
+
+
+## While the anchor is lost (camera tracking): match the play area to a
+## newly tracked plane at the same height that overlaps it, and re-anchor
+## the board there (it then shows again).
+func _update_recovery(delta: float) -> void:
+	if anchor_lost_seconds < RECOVER_MATCH_SECONDS or not anchors.has_anchor():
+		_recover_elapsed = 0.0
+		return
+	_recover_elapsed += delta
+	if _recover_elapsed < 0.5:
+		return
+	_recover_elapsed = 0.0
+	var found: Dictionary = match_play_area_plane()
+	if found.is_empty():
+		return
+	if reanchor_board(shown_pose, float(found["height"]), "recovered on matching plane", true, "recovered on matching plane (free)"):
+		recoveries += 1
+		anchor_lost_seconds = 0.0
+		locked_on_plane = true
+		lock_plane_height = float(found["height"])
+
+
+## The tracked plane at the board's surface height (within
+## PLANE_HEIGHT_TOLERANCE) whose outline covers at least RECOVER_OVERLAP of
+## the play area (or the board footprint if there is none):
+## {"index", "height", "overlap"}; empty if none.
+func match_play_area_plane() -> Dictionary:
+	if bridge == null:
+		return {}
+	var reference: float = lock_plane_height if locked_on_plane else board_origin_point(shown_pose).y
+	var area := PackedVector2Array()
+	if region != null and region.is_valid():
+		for p: Vector2 in region.polygon:
+			var w: Vector3 = shown_pose * Vector3(p.x, 0.0, p.y)
+			area.append(Vector2(w.x, w.z))
+	else:
+		var board_xf: Transform3D = shown_pose * placement.pivot_transform()
+		for c: Vector2 in [Vector2(-0.5, -0.5), Vector2(0.5, -0.5), Vector2(0.5, 0.5), Vector2(-0.5, 0.5)]:
+			var w: Vector3 = board_xf * Vector3(c.x * board_size.x, 0.0, c.y * board_size.y)
+			area.append(Vector2(w.x, w.z))
+	var total: float = absf(SurfaceRegion.signed_area(area))
+	if total <= 0.0001:
+		return {}
+	var best: Dictionary = {}
+	var planes: Array = bridge.horizontal_planes()
+	for i: int in planes.size():
+		var plane: Dictionary = planes[i] as Dictionary
+		var pose: Transform3D = plane.get("pose", Transform3D.IDENTITY) as Transform3D
+		var polygon: PackedVector2Array = plane.get("polygon", PackedVector2Array()) as PackedVector2Array
+		if polygon.size() < 3 or absf(pose.origin.y - reference) > PLANE_HEIGHT_TOLERANCE:
+			continue
+		var world := PackedVector2Array()
+		for p: Vector2 in polygon:
+			var w: Vector3 = pose * Vector3(p.x, 0.0, p.y)
+			world.append(Vector2(w.x, w.z))
+		var shared: float = 0.0
+		for piece: PackedVector2Array in Geometry2D.intersect_polygons(area, world):
+			shared += absf(SurfaceRegion.signed_area(piece))
+		var overlap: float = shared / total
+		if overlap >= RECOVER_OVERLAP and (best.is_empty() or overlap > float(best["overlap"])):
+			best = {"index": i, "height": pose.origin.y, "overlap": overlap}
+	return best
+
+
+## "Re-place on table": start placement again but keep the fitted outline's
+## shape; the next "Use my outline" puts it (and the board) at the reticle.
+func replace_on_table() -> void:
+	if not is_ar():
+		return
+	_remember_shape()
+	begin_replace()
+	flow.shape_pending = not saved_shape.is_empty()
+	flow.has_saved_area = flow.has_saved_area or flow.shape_pending
+	if hud != null:
+		hud.apply_flow(flow)
+
+
+## Store the play area's shape around the board centre (world axes) and the
+## board's world yaw / scale in saved_shape.
+func _remember_shape() -> void:
+	if phase != Phase.PLACED or region == null or not region.is_valid():
+		return
+	var board_xf: Transform3D = shown_pose * placement.pivot_transform()
+	var centre: Vector3 = board_xf.origin
+	var polygon := PackedVector2Array()
+	for p: Vector2 in region.polygon:
+		var w: Vector3 = shown_pose * Vector3(p.x, 0.0, p.y)
+		polygon.append(Vector2(w.x - centre.x, w.z - centre.z))
+	var x_axis: Vector3 = board_xf.basis.x
+	saved_shape = {"polygon": polygon, "yaw": atan2(-x_axis.z, x_axis.x), "scale": placement.scale}
+
+
+## Put the saved outline shape, centred on the board, at the reticle (a plane
+## anchor), then go to Fit edges so it can be nudged onto the real edges.
+func place_saved_shape() -> bool:
+	if not is_ar() or phase == Phase.PLACED or saved_shape.is_empty():
+		return false
+	if not anchors.place_at_screen(Vector2(0.5, 0.5)):
+		return false
+	anchor_kind = "plane"
+	anchor_reason = "outline re-placed on table"
+	front_follow = false
+	flow.anchor_pending = false
+	var inv: Transform3D = anchors.pose.affine_inverse()
+	var centre: Vector3 = anchors.pose.origin
+	var points := PackedVector2Array()
+	for v: Vector2 in saved_shape["polygon"] as PackedVector2Array:
+		var q: Vector3 = inv * (centre + Vector3(v.x, 0.0, v.y))
+		points.append(Vector2(q.x, q.z))
+	var x_axis: Vector3 = anchors.pose.basis.x
+	placement.offset = Vector3.ZERO
+	placement.magnify = 1.0
+	placement.scale = float(saved_shape.get("scale", placement.scale))
+	placement.yaw = float(saved_shape.get("yaw", 0.0)) - atan2(-x_axis.z, x_axis.x)
+	_set_region(SurfaceRegion.make(points, SurfaceRegion.Source.FITTED))
+	flow.shape_pending = false
+	_after_placed()
+	return true
+
+
+## Low light / plain surface: few feature points for a while while placed.
+func _update_low_features(delta: float) -> void:
+	var points: int = int(tracking_info.get("points", 100))
+	var reason: int = int(tracking_info.get("failure_reason", 0))
+	var low: bool = phase == Phase.PLACED and (points < LOW_FEATURE_POINTS or reason == CalibrationFlow.FAILURE_INSUFFICIENT_LIGHT)
+	_low_feature_seconds = _low_feature_seconds + delta if low else 0.0
+	var on: bool = _low_feature_seconds >= LOW_FEATURE_SECONDS or (low_features and low)
+	if on == low_features:
+		return
+	low_features = on
+	flow.low_light = on
+	if hud == null or board_hidden_by_loss:
+		return
+	hud.apply_flow(flow)
+	if placement.locked:
+		hud.set_status(CalibrationFlow.LOW_LIGHT_HINT if on else "")
+
+
+## Median height of the feature points on the play area over the plane
+## under the board (debug: "feat -1.2cm n14"; a few cm off means ARCore's
+## plane is not at the real surface, which makes the board and outline
+## shift with the viewing angle).
+func _measure_feature_gap() -> void:
+	feature_gap = NAN
+	feature_count = 0
+	if bridge == null or is_nan(surface_plane_height) or region == null or not region.is_valid():
+		return
+	var area := PackedVector2Array()
+	for p: Vector2 in region.polygon:
+		var w: Vector3 = shown_pose * Vector3(p.x, 0.0, p.y)
+		area.append(Vector2(w.x, w.z))
+	var heights: Array[float] = []
+	for point: Vector3 in bridge.point_cloud(MAX_OVERLAY_POINTS):
+		if absf(point.y - surface_plane_height) > 0.1:
+			continue
+		if Geometry2D.is_point_in_polygon(Vector2(point.x, point.z), area):
+			heights.append(point.y - surface_plane_height)
+	feature_count = heights.size()
+	if feature_count < 5:
+		return
+	heights.sort()
+	feature_gap = heights[int(feature_count * 0.5)]
+
+
+# --- Debug overlay (placed) ---------------------------------------------------------
+
+func _ensure_debug_overlay() -> void:
+	if _debug_overlay != null:
+		return
+	_debug_overlay = Node3D.new()
+	_debug_overlay.name = "AnchorDebug"
+	add_child(_debug_overlay)
+	_debug_points = MultiMeshInstance3D.new()
+	_debug_points.name = "FeaturePoints"
+	var multimesh := MultiMesh.new()
+	multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	var dot := SphereMesh.new()
+	dot.radius = 0.003
+	dot.height = 0.006
+	dot.radial_segments = 6
+	dot.rings = 3
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = Color(1.0, 0.92, 0.35)
+	material.no_depth_test = true
+	dot.material = material
+	multimesh.mesh = dot
+	_debug_points.multimesh = multimesh
+	_debug_overlay.add_child(_debug_points)
+	_anchor_marker = _make_cross(Color(1.0, 1.0, 0.2), 0.05)
+	_anchor_marker.name = "AnchorCross"
+	_debug_overlay.add_child(_anchor_marker)
+	_world_marker = _make_cross(Color(1.0, 0.25, 0.9), 0.035)
+	_world_marker.name = "WorldCross"
+	_debug_overlay.add_child(_world_marker)
+	_debug_overlay.visible = false
+
+
+static func _make_cross(color: Color, half: float) -> Node3D:
+	var root := Node3D.new()
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = color
+	material.no_depth_test = true
+	for axis: Vector3 in [Vector3(half * 2.0, 0.003, 0.003), Vector3(0.003, 0.003, half * 2.0), Vector3(0.003, half, 0.003)]:
+		var bar := MeshInstance3D.new()
+		var mesh := BoxMesh.new()
+		mesh.size = axis
+		bar.mesh = mesh
+		bar.material_override = material
+		if axis.y > 0.01:
+			bar.position.y = half * 0.5
+		root.add_child(bar)
+	return root
+
+
+## The world cross: where the board was placed, in XROrigin3D space, never
+## moved afterwards. If it swims over the table texture together with the
+## board, ARCore's world (camera pose / plane height) is off; if the board
+## moves but the cross does not, the anchor moved.
+func _place_world_marker() -> void:
+	_ensure_debug_overlay()
+	_world_marker.position = board_origin_point()
+
+
+func debug_overlay_visible() -> bool:
+	return _debug_overlay != null and _debug_overlay.visible
+
+
+func world_marker_point() -> Vector3:
+	return _world_marker.position if _world_marker != null else Vector3.ZERO
+
+
+func _update_debug_overlay() -> void:
+	var wanted: bool = is_ar() and phase == Phase.PLACED and hud != null and hud.debug_requested
+	if not wanted:
+		if _debug_overlay != null:
+			_debug_overlay.visible = false
+		return
+	_ensure_debug_overlay()
+	_debug_overlay.visible = true
+	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
+	_debug_overlay.global_transform = origin_xform
+	_anchor_marker.transform = anchors.pose
+	var points: PackedVector3Array = bridge.point_cloud(MAX_OVERLAY_POINTS)
+	var multimesh: MultiMesh = _debug_points.multimesh
+	multimesh.instance_count = points.size()
+	for i: int in points.size():
+		multimesh.set_instance_transform(i, Transform3D(Basis(), points[i]))
 
 
 ## Board height minus the height of the detected surface under the board's
@@ -1761,7 +2135,7 @@ func measure_surface_gap() -> float:
 
 ## Height of the plane a locked board belongs on (NAN if none).
 func _lock_plane_preference() -> float:
-	return lock_plane_height if placement != null and placement.locked and locked_on_plane else NAN
+	return lock_plane_height if phase == Phase.PLACED and locked_on_plane else NAN
 
 
 ## The detected plane whose outline contains `point`'s x/z (XROrigin3D
@@ -1877,7 +2251,9 @@ func _end_jump_hold() -> void:
 ## HEIGHT_FIX_SECONDS is re-anchored onto that plane; a board on a free
 ## anchor is moved onto a plane anchor as soon as a plane is under it.
 func _update_height_guard(delta: float) -> void:
-	if not placement.locked or jump_holding or not anchors.has_anchor() or anchors.tracking != AnchorBackend.Tracking.TRACKING:
+	var adjusting: bool = flow.step == CalibrationFlow.Step.ADJUSTING or flow.step == CalibrationFlow.Step.FITTING
+	var touching: bool = gestures.touch_count() > 0 or not _fit_handle.is_empty()
+	if not (placement.locked or (adjusting and not touching)) or jump_holding or not anchors.has_anchor() or anchors.tracking != AnchorBackend.Tracking.TRACKING:
 		_height_bad_seconds = 0.0
 		return
 	if int(tracking_info.get("camera_state", 0)) != CalibrationFlow.CAMERA_TRACKING:
@@ -1892,7 +2268,7 @@ func _update_height_guard(delta: float) -> void:
 		# Not the plane the board was locked on (that one is not under it now).
 		_height_bad_seconds = 0.0
 		return
-	if gap <= PLANE_HEIGHT_TOLERANCE and anchor_kind != "plane":
+	if gap <= PLANE_HEIGHT_TOLERANCE and anchor_kind != "plane" and placement.locked:
 		_upgrade_elapsed += delta
 		if _upgrade_elapsed >= PLANE_UPGRADE_INTERVAL:
 			_upgrade_elapsed = 0.0
@@ -1939,6 +2315,10 @@ func drift_debug() -> String:
 	parts.append("surf %s" % ("none" if is_nan(surface_gap) else "%+.1fcm" % (0.0 if absf(surface_gap) < 0.0005 else surface_gap * 100.0)))
 	if surface_plane >= 0:
 		parts.append("pl#%d h%.2f" % [surface_plane, surface_plane_height])
+	if feature_count > 0:
+		parts.append("feat %s n%d" % ["?" if is_nan(feature_gap) else "%+.1fcm" % (0.0 if absf(feature_gap) < 0.0005 else feature_gap * 100.0), feature_count])
+	if recoveries > 0:
+		parts.append("recovered %d" % recoveries)
 	if jump_holding:
 		var origin_held: Vector3 = board_origin_point(_trusted_pose)
 		parts.append("jump held %.0fmm" % (board_origin_point(anchors.pose).distance_to(origin_held) * 1000.0))
@@ -1952,10 +2332,9 @@ func drift_debug() -> String:
 func _on_anchor_tracking_changed(state: int) -> void:
 	if hud == null or phase != Phase.PLACED:
 		return
-	if state == AnchorBackend.Tracking.TRACKING:
+	# Losses are reported by _update_tracking_loss (after LOST_HIDE_SECONDS).
+	if state == AnchorBackend.Tracking.TRACKING and not board_hidden_by_loss:
 		hud.apply_flow(flow)
-	else:
-		hud.set_status("Tracking lost. Point the phone back at the board and hold still.")
 
 
 func _make_reticle() -> Node3D:

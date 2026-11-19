@@ -48,6 +48,13 @@ var tracking_seconds: float = 0.0
 var anchor_pending: bool = false
 ## An outline traced earlier this session can be reused (switching games).
 var has_saved_area: bool = false
+## "Re-place on table" was used: "Use my outline" puts the kept outline at the reticle.
+var shape_pending: bool = false
+## The board has been lost for a while: offer "Re-place on table".
+var recover_offer: bool = false
+## Few feature points (low light / plain surface) while placed.
+var low_light: bool = false
+const LOW_LIGHT_HINT: String = "Low light or a plain surface: more light (or a textured cloth on the table) helps tracking."
 ## The board has a play area (traced / surface / fitted) whose edges can be fitted.
 var has_region: bool = false
 ## Points in the current tracing stroke (for the HUD hint).
@@ -155,7 +162,7 @@ func controls() -> Dictionary:
 	return {
 		"place": step == Step.SURFACE_FOUND,
 		"trace": step == Step.SURFACE_FOUND,
-		"use_area": has_saved_area and (step == Step.SCANNING or step == Step.SURFACE_FOUND),
+		"use_area": (has_saved_area and step == Step.SCANNING and not shape_pending) or (has_saved_area and step == Step.SURFACE_FOUND),
 		"trace_done": step == Step.TRACING and trace_points >= 3,
 		"trace_clear": step == Step.TRACING and trace_points > 0,
 		"trace_cancel": step == Step.TRACING,
@@ -168,6 +175,7 @@ func controls() -> Dictionary:
 		"fit_edges": step == Step.ADJUSTING and has_region,
 		"fit_handles": step == Step.FITTING,
 		"replace": step == Step.ADJUSTING or step == Step.LOCKED or step == Step.FITTING,
+		"replace_keep": recover_offer and (step == Step.ADJUSTING or step == Step.LOCKED or step == Step.FITTING),
 		"unlock": step == Step.LOCKED,
 		"magnify": step == Step.LOCKED,
 		"recenter": step == Step.ADJUSTING or step == Step.LOCKED,
@@ -193,6 +201,13 @@ func title() -> String:
 
 
 func message() -> String:
+	var text: String = _step_message()
+	if low_light and (step == Step.FITTING or step == Step.ADJUSTING):
+		text += "\n" + LOW_LIGHT_HINT
+	return text
+
+
+func _step_message() -> String:
 	match step:
 		Step.SCANNING:
 			var text: String = tracking_message(last_info)
@@ -202,6 +217,8 @@ func message() -> String:
 		Step.SURFACE_FOUND:
 			if not trace_error.is_empty():
 				return trace_error
+			if shape_pending:
+				return "Surface found. Aim the dot at the middle of your play area and tap Use my outline (no re-tracing), or trace a new one."
 			return "Surface found. Trace the play area for the best fit, or tap Place here."
 		Step.TRACING:
 			if trace_points == 0 and not trace_error.is_empty():

@@ -16,6 +16,10 @@ var hit_callback: Callable = Callable()
 var planes: Array = []
 ## Anchor tracking state reported for every anchor (0 tracking, 1 paused).
 var anchor_state: int = 0
+## Per-anchor tracking state overrides (anchor id -> state).
+var anchor_states: Dictionary = {}
+## Optional feature points (replaces the default two).
+var cloud: PackedVector3Array = PackedVector3Array()
 ## Applied to every reported anchor pose (simulates ARCore correcting the
 ## world, or garbage poses while an anchor is not tracking).
 var pose_shift: Transform3D = Transform3D.IDENTITY
@@ -74,6 +78,8 @@ func horizontal_planes() -> Array:
 
 
 func point_cloud(_max_points: int) -> PackedVector3Array:
+	if not cloud.is_empty():
+		return cloud
 	return PackedVector3Array([Vector3(0.0, -0.4, -0.6), Vector3(0.1, -0.4, -0.7)])
 
 
@@ -118,7 +124,9 @@ func last_anchor_id() -> int:
 
 
 func get_anchor_tracking_state(anchor_id: int) -> int:
-	return anchor_state if _poses.has(anchor_id) else -1
+	if not _poses.has(anchor_id):
+		return -1
+	return int(anchor_states.get(anchor_id, anchor_state))
 
 
 func remove_anchor(anchor_id: int) -> void:
