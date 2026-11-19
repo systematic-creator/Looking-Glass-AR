@@ -18,14 +18,17 @@ board; the full game lives in
 [Competitive-evolution-AGR](https://github.com/Systematic-creator/Competitive-evolution-AGR)
 and is on hiatus until it gets imported here.
 
-Godot **4.4.1**, typed GDScript, Compatibility renderer, landscape, Android +
+Godot **4.4.1**, typed GDScript, Compatibility renderer, portrait or
+landscape (each game's manifest picks; the default follows the phone), Android +
 ARCore. Desktop and headless runs use a touch / orbit camera instead of AR.
 
 ## Architecture
 
 ```
 platform/
-  looking_glass.gd        autoload: game catalog, launcher <-> game navigation
+  looking_glass.gd        autoload: game catalog, orientation, launcher <-> game navigation
+  display/lg_orientation.gd       orientation rules (manifest modes, base canvas sizes)
+  display/orientation_service.gd  applies / restores orientation, rotation + UI fade
   launcher/               catalog screen (main scene): one card per game
   host/game_host.gd       runs one game: board scene, AR session, input routing
   host/orbit_camera.gd    touch / desktop camera for the non-AR fallback
@@ -44,6 +47,8 @@ platform/
   ar/anchor_service.gd    the one world anchor (+ Cloud Anchor stub for multiplayer)
   ar/board_placement.gd   player's offset / rotation / size, saved per game
   ar/gesture_tracker.gd   tap / drag / pinch+twist from raw touches
+  ar/swipe_detector.gd    screen-space swipes for runners (+ swipe_buffer.gd)
+  ar/passthrough_background.gd  camera image for portrait / reverse landscape
   ar/surface_region.gd    play-area polygon: fit / clamp the board footprint
   visual/holo.gd          Holo: shared hologram materials, glow base, bars, ripples
   visual/holo_drop.gd     HoloDrop: drop-in animation (fall, squash, flash, ripple)
@@ -51,7 +56,9 @@ platform/
   visual/*.gdshader       the two hologram shaders (Compatibility-renderer safe)
 games/
   tic_tac_toe/            sample game (hologram board)
+  stack_tower/            timing game in a tall box
   competitive_evolution/  placeholder adapter
+  mage_run/               planned runner (design: docs/mage-run.md)
 addons/ARCorePlugin/      Android export plugin (binaries are built, not committed)
 tools/arcore_plugin/      ARCore plugin build script + patch
 tests/                    headless test suites
@@ -194,6 +201,14 @@ as is, so both are stretched the same way. The view and projection come from
 the same `ArSession_update` as the camera texture. `view_tests` checks that
 every table point renders on its video pixel from every viewpoint (and that
 the screen-aspect crop ARCore uses by default would be off by 100-270 px).
+That is the landscape path (Surface.ROTATION_90). **In portrait** (or
+reverse landscape) the feed shader cannot rotate the image, so the patched
+plugin tells ARCore the real rotation and window size, ARCore crops the
+rotated image to the screen, and the plugin reports the camera-texture UVs
+of the four screen corners each frame; `PassthroughBackground` draws the
+texture with those UVs as the environment's background canvas
+(`Environment.BG_CANVAS`), and the projection, view and hit tests use the
+same display geometry. `view_tests` models that path too.
 So content that still slides over the table while the board's pose reads
 constant comes from ARCore's world itself: camera pose error, or a plane
 height that is off. Both are worse in low light and on plain dark surfaces.
@@ -326,18 +341,38 @@ as usual. `validate()` rejects tall-box heights over 3.0 m.
 | `_on_board_drag(from, to)` | One-finger drag in board space, if `captures_drag()` returns true. |
 | `_on_box_ray(origin, direction)` | Every tap while playing, as a board-space ray, just before `_on_board_tap`: pick things in the airspace (`get_box().intersect_ray()`, `ray_at_height()`, your own geometry). |
 | `_on_box_changed(box: PlayBox)` | The player changed the airspace height (after `_on_board_ready`; also the `box_changed` signal). Re-fit anything tied to the top. |
+| `_on_swipe(direction: Vector2i, info)` | A screen-space swipe while playing, if `captures_swipes()` returns true (runners). `direction` is `Vector2i.LEFT` / `RIGHT` / `UP` / `DOWN` as the screen is held; `info` has velocity, time, from / to, distance, index (S-strokes). Taps still arrive as taps. |
+| `_on_orientation_changed(portrait: bool)` | The phone turned (after `_on_board_ready`; also the `orientation_changed` signal). Platform UI has already re-laid out; move what your anchors do not handle. A runner pauses itself here. |
 | `_on_exit()` | Player is leaving the game. Save here. |
 
 **Game UI:** a game may add its own CanvasLayer controls; return true from
 `is_over_game_ui(screen) -> bool` for points on them so they are not board
 touches.
 
+**Orientation:** `manifest.orientation` is `"either"` (default),
+`"landscape"` or `"portrait"`. GameHost applies it on load through the app's
+`OrientationService` (sensor based: both directions of the allowed shape
+still work) and restores `"either"` on exit; the launcher follows the phone.
+Android keeps the Activity on rotation (`configChanges` in the export
+template), so the AR session, the anchor and the board survive a turn
+untouched. On a rotation the base canvas swaps between 1280 x 720 and
+720 x 1280 (same physical UI size), the UI fades back in over 0.22 s, the
+host / AR HUDs re-lay out, the tap slop and swipe threshold are recomputed
+(same inches, new pixels), ARCore is told the display rotation, and then
+the game gets `_on_orientation_changed()`. An `"either"` game must lay its
+HUD out for both shapes (anchored Controls plus `is_portrait()`).
+
+**Swipes:** return true from `captures_swipes()` to get `_on_swipe()` from a
+`SwipeDetector` (one finger, 0.28 in within 0.25 s, dominant axis 1.4x,
+fires on the threshold, S-strokes reverse). Those strokes never orbit the
+touch camera. `SwipeBuffer` gives the usual 0.15 s input buffer.
+
 **Touch-camera focus:** override `view_focus_height() -> float` (board space)
 to have the "Play without AR" camera ease its orbit centre to that height,
 e.g. the top of a growing tower (Stack Tower). The default (-1) keeps the
 fixed framing; AR ignores it.
 
-**Helpers:** `is_playing()`, `is_board_locked()`, `get_board_size()`,
+**Helpers:** `is_playing()`, `is_board_locked()`, `is_portrait()`, `get_board_size()`,
 `is_on_board(point)`, `set_status(text)` (shown by the platform while
 playing; hidden during AR calibration, prefixed "Paused" otherwise),
 `request_exit()` (back to the catalog).
@@ -512,7 +547,19 @@ resume / re-place / sessions, outline levels, tap rays, the games' boxes),
 and regrow, miss / game over / restart, scoring and session best, sweep
 speed, tap-anywhere, debris and sliding slabs inside the box, the tower
 sinking under the lid, the touch camera following the top, the Hologram /
-Solid style toggle).
+Solid style toggle), `orientation_tests` (manifest orientation and
+validation, apply on load / restore on exit, simulated rotations
+2340x1080 <-> 1080x2340: base canvas swap, one callback per turn, the UI
+fade, every HUD (host, AR calibration steps, debug line, Stack Tower,
+launcher) inside the screen without overlaps in both shapes, AR: ARCore
+told the rotation, the portrait passthrough background, the locked board
+and anchor unmoved, cell taps exact before / after the turn and after a
+180-degree flip, landscape-only plugin builds lock to landscape),
+`swipe_tests` (swipe thresholds in inches at several DPIs and in portrait,
+dominant axis, fire on threshold, slow strokes, S-strokes, taps, two
+fingers, the input buffer, routing through GameHost). `view_tests` also
+covers portrait (ARCore's rotated centre crop drawn by the passthrough
+shader, content and taps registered).
 Leaked-RID messages at exit are harmless.
 
 ## Android build
@@ -559,8 +606,12 @@ godot --headless --path . --install-android-build-template \
   --export-release "Android AR" build/looking-glass-ar.apk
 ```
 
-Hold the phone sideways: the app is landscape only (it matches the plugin's
-camera rotation).
+The app follows the phone (portrait or landscape) unless a game's manifest
+locks one shape. In landscape the plugin keeps its original stretched camera
+background; in any other rotation the plugin tells ARCore the real display
+rotation and the app draws the camera image itself
+(`platform/ar/passthrough_background.gd`, see the patch). A plugin build
+without `set_display_rotation` keeps AR in landscape.
 
 ## Roadmap
 

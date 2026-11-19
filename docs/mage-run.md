@@ -1,9 +1,26 @@
 # Mage Run: design doc
 
-Status: **concept / pre-production**. No game code yet. This document is the
+Status: **pre-production**. No Mage Run game code yet. This document is the
 plan for a medieval fantasy three-lane endless runner on the Looking Glass
-platform, plus the platform work it needs (per-game screen orientation and
-screen-space swipes).
+platform, plus the platform work it needs. That platform work (milestones
+M1-M3: per-game screen orientation, smooth rotation, ARCore in portrait,
+screen-space swipes) is **implemented on the `mage-run` branch** with
+headless tests; the parts only a phone can prove are listed in
+[section 10.6](#106-device-checks-still-needed).
+
+**Decisions (answered by the user):**
+
+1. **Rows:** the ground plus **2 holographic "arcane rows"**, each with 3
+   lanes: 9 lanes in total. The doc and the UI call them *arcane rows*.
+2. **Orientation:** every game works in **either** orientation unless its
+   manifest explicitly opts out (`orientation`, default `"either"`).
+   Tic-Tac-Toe and Stack Tower are `either` now (portrait HUDs done), and so
+   is Tattoo Studio once it gets its portrait layout on the `3d-model-game`
+   branch.
+3. **Rotating mid-run:** platform rule: every game gets an
+   orientation-changed callback; Mage Run **pauses** there and resumes with
+   a countdown.
+4. **Audio:** not needed for now; **out of scope for the first playable**.
 
 ![Style reference](mage-run/reference.jpg)
 
@@ -12,9 +29,9 @@ user as the target look. It is not a shipped asset and must not be packaged,
 traced or used as a texture. Every shipped model, texture and sound is made in
 code or comes from a CC0 source (see [Assets and licensing](#assets-and-licensing)).*
 
-![Chosen direction: solid storybook road with hologram rows](mage-run/concept-combined.jpg)
+![Chosen direction: solid storybook road with arcane (hologram) rows](mage-run/concept-combined.jpg)
 
-*`docs/mage-run/concept-combined.jpg` is a generated concept mockup of the chosen direction (solid storybook world plus hologram upper rows). Mood only, not to scale; in-game the hologram rows sit directly above the road lanes.*
+*`docs/mage-run/concept-combined.jpg` is a generated concept mockup of the chosen direction (solid storybook world plus hologram-look upper rows, the *arcane rows*). Mood only, not to scale; in-game the arcane rows sit directly above the road lanes.*
 
 ---
 
@@ -27,7 +44,8 @@ Royal carriages, crates, barrel mine-carts and wooden fences stream toward
 the player. The player dodges them with fast swipes (left / right to change
 lane, up to jump, down to slide) and grabs gold star coins. As the run goes
 on, **glowing cyan hologram rune-stone platforms** appear *above* the solid
-road. They are new rows of lanes, so the run gets taller as well as faster.
+road: the two **arcane rows**. They are new rows of lanes (3 lanes each, so
+9 lanes in all), and the run gets taller as well as faster.
 Coin lines arc up onto them (risk and reward: the high line pays more but
 the platforms can collapse).
 
@@ -40,7 +58,7 @@ Pillars:
    obstacle shows clearly what it needs (jump, slide or a lane change).
 2. **Readable at table size.** The whole run fits in a small play box seen
    from about 0.5-1 m away; silhouettes and colour do the work, not detail.
-3. **Solid world, hologram rows.** The opaque warm diorama is the ground
+3. **Solid world, arcane rows.** The opaque warm diorama is the ground
    truth; translucent cyan rows are clearly "magic" and clearly a different
    floor.
 4. **The room stays visible.** No side rows of houses, no skybox walls: it is
@@ -66,7 +84,7 @@ Pillars:
 
 - Manifest uses **`tall_box = true`**: the cap is `min(3.0 m, 4 x long side)`
   = 2.4 m for a 0.6 m board. Mage Run does not need that much; it wants
-  headroom for 2 hologram rows and jump arcs.
+  headroom for the 2 arcane rows and jump arcs.
 - **Suggested airspace: `box_height` 0.40 m, `box_min_height` 0.30 m,
   `box_max_height` 0.70 m.** Rows sit at fixed fractions of the default
   layout (see section 3), so a lower box only trims the sky above the top row
@@ -111,12 +129,18 @@ Pillars:
 - The wizard's collision capsule: radius 0.022 m, height 0.06 m (a 6 cm
   wizard on a table).
 
-### Hologram rows (rows 1-2; row 3 optional)
+### Arcane rows (rows 1-2)
 
-- Rows are **translucent cyan rune-stone platforms** made of tiles (one tile
-  per lane per segment, about 0.075 x 0.10 m), floating above the road.
-- Heights: row 1 at **+0.10 m**, row 2 at **+0.20 m** (row 3, if used, at
-  +0.30 m; it needs the 0.40 m default box).
+- **Decided: ground + 2 arcane rows, 3 lanes each: 9 lanes** (3 lanes x 3
+  rows). There is no third arcane row. "Arcane row" is the name in the doc,
+  the code and the UI (for example "Arcane I" / "Arcane II" in the HUD's
+  row indicator); "hologram" only describes their look.
+- Arcane rows are **translucent cyan rune-stone platforms** made of tiles
+  (one tile per lane per segment, about 0.075 x 0.10 m), floating above the
+  road.
+- Heights: row 1 (Arcane I) at **+0.10 m**, row 2 (Arcane II) at
+  **+0.20 m**. With jump arcs and the castle top this fits the 0.40 m default
+  box with room to spare.
 - **Unlock by distance** (in metres run, world units at scale 1; tuned in
   playtests):
 
@@ -126,7 +150,6 @@ Pillars:
   | 150 m | Row 1 segments start appearing (short, 2-4 tiles long) |
   | 400 m | Row 1 long runs; row 2 segments start |
   | 800 m+ | Rows 1-2 common, multi-row coin arcs, collapsing platforms |
-  | (option) 1500 m | Row 3 |
 
 - Rows are **not continuous floors**. They are segments over parts of the
   road, so the ground stays the default.
@@ -152,7 +175,7 @@ falling wizard cannot avoid. There is at least 0.25 s of clear ground
   so that, at a typical 30 degree look-down, each row is visibly offset on
   screen.
 - A soft cyan **drop shadow / rune ring** is projected onto the road under
-  the wizard when on a hologram row, so depth reads.
+  the wizard when on an arcane row, so depth reads.
 
 ---
 
@@ -160,7 +183,7 @@ falling wizard cannot avoid. There is at least 0.25 s of clear ground
 
 ### Gestures
 
-| Swipe | Ground | On a hologram row |
+| Swipe | Ground | On an arcane row |
 | --- | --- | --- |
 | Left / right | Change lane (0.12 s lateral move) | Change lane (only onto a tile; otherwise a blocked "bump" and stay) |
 | Up | Jump (apex 0.11 m, 0.55 s airtime at base speed) | Jump (can reach the next row) |
@@ -235,7 +258,7 @@ Each obstacle needs exactly one answer, shown by its shape:
 | **Crate stack** (1-2 lanes, tall) | Change lane | Stacked crates, rope-bound |
 | **Barrel mine-cart** (moving) | Change lane (it rolls toward you, faster than the road) | Wooden cart full of barrels, on a short rail stretch |
 | **Royal carriage** (2 lanes wide, tall) | Change lane, or jump onto its roof (a "platform" obstacle) | Gold and white carriage with blue crystals; the roof is walkable |
-| **Rune gap** (hologram rows only) | Jump, or drop | A missing tile |
+| **Rune gap** (arcane rows only) | Jump, or drop | A missing tile |
 | **Cracked rune tile** | Do not stop on it (crumbles after 0.4 s) | Flickering red-tinted rune |
 
 Collision rule: hitting the front of a blocking obstacle ends the run
@@ -250,7 +273,7 @@ Gold star coins (spinning, about 0.02 m) come in lines of 5-12:
 - **Straight line** in a lane (safe, low value).
 - **Lane weave** (a curve across lanes) that teaches lane changes.
 - **Jump arc** over a fence (coins at the apex reward good timing).
-- **Ramp arc** from the ground up onto a hologram row (the main risk-reward:
+- **Ramp arc** from the ground up onto an arcane row (the main risk-reward:
   up there coins are worth **x2 on row 1 and x3 on row 2**, but tiles may
   crack and segments end).
 - **Carriage roof run**: coins along a carriage's roof (reached by jumping
@@ -320,7 +343,7 @@ meter, as in Subway Surfers.
 3. **At most two consecutive inputs** required within 0.35 s.
 4. **No blind lane changes:** a lane is never blocked in a way only visible
    from directly behind.
-5. **Hologram segments** end over at least 0.25 s of clear ground.
+5. **Arcane-row segments** end over at least 0.25 s of clear ground.
 6. **Cracked tiles** only appear with an intact tile within one lane change.
 7. **No unbeatable coin lines** (section 5).
 
@@ -351,14 +374,14 @@ distance fair without a huge board (see open questions).
 
 ## 8. Art direction
 
-### Look: solid storybook diorama + hologram rows
+### Look: solid storybook diorama + arcane rows
 
 - **Solid** (the default for the world): opaque, softly lit, stylized
   low-poly with warm colours: cobblestones (grey-beige), planks (honey
   brown), a rounded grey stone base with moss green edges, a gold and white
   carriage with blue crystals, red-brown crates, dark barrels, a light grey
   stone castle with blue-slate roofs.
-- **Hologram rows**: translucent, additive-glow cyan rune-stone tiles using
+- **Arcane rows**: translucent, additive-glow cyan rune-stone tiles using
   the platform's Holo kit (`Holo.material`, edge lines, scanlines and
   sweep) with carved rune glyphs (procedural decals) and a soft flicker.
   They are the only see-through elements in the scene, which keeps the two
@@ -379,7 +402,7 @@ different split:
 
 - **World props**: Solid by default. A "Hologram world" option renders
   props with `Holo.material` for players who want the all-hologram look.
-- **Upper rows**: always Hologram (gameplay meaning: "magic floor").
+- **Arcane rows**: always Hologram (gameplay meaning: "magic floor").
 - Proposal: lift the style enum and the material helpers (`solid_material`,
   outline hull, `holo_material`) from Stack Tower into
   `platform/visual/` (for example a `HoloStyle` helper), so both games share
@@ -421,137 +444,220 @@ of the GPU.
 
 ## 9. Audio notes
 
+**Decision: audio is out of scope for the first playable** (milestones
+M4-M8 ship silent). The notes below are kept for a later milestone (M9).
+
 - The platform has no audio yet. Mage Run would be the first game with
   sound, so it needs a small `platform/audio/` helper (bus setup, a pause
   hook that mutes on `_on_paused`, and respect for the phone's silent mode
   where possible).
 - SFX (CC0 or synthesized in code): footsteps on cobbles and planks
   (alternating), lane whoosh, jump "hup" plus a cloth flap, slide scrape,
-  coin chime (pitch rising along a line), hologram row hum and step "ting",
+  coin chime (pitch rising along a line), arcane row hum and step "ting",
   tile crack, crash thud, power-up cast (staff sparkle), shield pop.
 - Music: a short looping medieval folk tune (CC0 or commissioned later) with
-  a second layer that fades in on hologram rows.
+  a second layer that fades in on the arcane rows.
 - Budget: OGG Vorbis, mono SFX, <= 1.5 MB total; at most 8 voices.
 
 ---
 
 ## 10. Platform work required
 
+**Status: implemented on the `mage-run` branch (M1-M3)**, covered by the
+headless suites `orientation_tests`, `swipe_tests` and the portrait cases in
+`view_tests`. Section 10.6 lists what still needs a phone.
+
 ### 10.1 Per-game orientation
 
-- **Manifest**: `@export_enum("landscape", "portrait", "either") var
-  orientation: String = "landscape"` on `LGGameManifest` (validated).
-  Mage Run declares `portrait`. Tic-Tac-Toe, Stack Tower and Tattoo Studio
-  keep `landscape` (or become `either` once their HUDs are checked).
-- **Launcher / catalog**: stays landscape (or `either`).
-- **Applying it**: `GameHost` calls
-  `DisplayServer.screen_set_orientation()` on game load and restores the
-  launcher's orientation on exit:
+- **Manifest** (`LGGameManifest`): `@export_enum("either", "landscape",
+  "portrait") var orientation: String = "either"`, validated (an unknown
+  value keeps the game out of the catalog).
+- **Default `either`, opt-out only:** every game follows the phone unless
+  its manifest locks one shape. Tic-Tac-Toe, Stack Tower and Competitive
+  Evolution declare `either` (their HUDs lay out in portrait; see 10.2).
+  Tattoo Studio (on the `3d-model-game` branch, not touched here) becomes
+  `either` when its side panels get the portrait bottom-tray layout.
+- **Mage Run declares `either` too.** It *plays best in portrait* (a long
+  road up the screen): a first-run hint suggests holding the phone upright,
+  but landscape works (the road is simply wider on screen). Rotating
+  mid-run pauses (decision 3).
+- **Launcher / catalog:** `either`; its cards become one centred column of
+  wide cards in portrait.
+- **Applying it:** `GameHost` asks the app's `OrientationService` (a child
+  of the `LookingGlass` autoload) on game load and restores `either` on exit
+  (also on any return to the launcher):
+  - `either` -> `DisplayServer.SCREEN_SENSOR` (Android `fullSensor`)
   - `landscape` -> `SCREEN_SENSOR_LANDSCAPE` (both landscape directions)
-  - `portrait` -> `SCREEN_SENSOR_PORTRAIT`
-  - `either` -> `SCREEN_SENSOR`
-- **Android export**: today `project.godot` has
-  `window/handheld/orientation=0` (landscape, locked). Change the project
-  default to **sensor landscape** (`4`, `SCREEN_SENSOR_LANDSCAPE`; `5` is
-  sensor portrait, `6` full sensor) so the
-  Activity allows runtime changes. Check that the generated
-  `AndroidManifest.xml` `screenOrientation` and `configChanges` include
-  `orientation|screenSize`, so Android does not restart the Activity. That
-  would kill the AR session; Godot's template already declares this, but it
-  must be verified in the exported APK (`aapt dump xmltree`).
+  - `portrait` -> `SCREEN_SENSOR_PORTRAIT` (both portrait directions)
+- **Project default:** `window/handheld/orientation=6` (full sensor; it was
+  `0`, landscape locked), so the launcher already follows the phone.
+- **Activity survives rotation:** Godot's Gradle template declares
+  `android:configChanges="...orientation|...|screenSize|smallestScreenSize|density|...|screenLayout|uiMode"`,
+  so Android resizes the window instead of restarting the Activity (which
+  would kill the ARCore session). Verified in the exported APK's
+  `AndroidManifest.xml` (see the branch report).
+- **Old plugin builds:** if the ARCore plugin lacks `set_display_rotation`
+  (built from the old patch), AR forces `landscape` while it runs.
 
 ### 10.2 Smooth rotation
 
-- **Viewport**: `window/stretch/mode="canvas_items"` with
-  `aspect="expand"` already adapts to any aspect ratio. On
-  `get_viewport().size_changed`:
-  - **HUD rebuild**: platform HUD (back button, status label, calibration
-    HUD, AR debug) and game HUDs re-layout from anchors. Tattoo Studio's
-    `TattooStudioUI.layout()` (on the `3d-model-game` branch) already
-    listens to `size_changed`; the others
-    are anchored Controls. Each HUD gets a portrait layout pass (for
-    example, Tattoo Studio's side panels become a bottom tray).
-  - **A short cross-fade** (0.25 s black-to-clear overlay) hides the
-    one-frame reflow while Android rotates the surface.
-- **AR camera**: ARCore must be told the new display rotation and size
-  (`Session.setDisplayGeometry(rotation, w, h)`) so the passthrough UVs and
-  the projection matrix match. The current plugin and our
-  `view_tests` assume landscape (19.5:9 with a stretched passthrough).
-  Work items: plumb display rotation through `ARCoreBridge`, re-derive the
-  passthrough crop for portrait, and extend `view_tests` to 9:19.5 portrait.
-- **Anchor preserved**: rotating the phone changes nothing in the world.
-  The ARCore anchor and the board's world pose are untouched; only the
-  camera's projection and the screen mapping change. The board must not
-  jump (test: a locked board's world transform is identical across a
-  rotation, as `recovery_tests` already do for tracking loss).
-- **Pause on rotate**: the game is paused (`lg_set_app_paused(true)`) for
-  the rotation (about 0.3 s) and resumes with a 3-2-1 for runners
-  (Mage Run only; other games resume immediately).
+- **Base canvas swap:** the project stretches a 1280 x 720 canvas
+  (`canvas_items`, `expand`). In portrait `OrientationService` swaps it to
+  **720 x 1280**, so UI keeps its physical size (without the swap a
+  portrait phone would scale the 1280-wide canvas to its narrow side:
+  about 44 % smaller buttons and text). A 1080 x 2340 phone gets a
+  720 x 1560 viewport in portrait and 1560 x 720 in landscape.
+- **UI fade:** after the window turns, every top-level UI item fades back
+  in over **0.22 s** (`OrientationService.FADE_SECONDS`), hiding the
+  one-frame reflow; the camera passthrough never fades. (Android itself
+  animates the rotation.)
+- **HUD re-layout:** anchored Controls re-layout by themselves; listeners
+  of `orientation_changed` move what anchors cannot express:
+  - Host HUD: the status line spans the top beside "‹ Games" in portrait
+    (top right in landscape).
+  - Calibration HUD: the button row is a centred `HFlowContainer` (one line
+    in landscape, wrapped lines in portrait), with smaller portrait buttons;
+    the step banner narrows and starts below "‹ Games" / "dbg"; the Airspace
+    slider and the debug line adjust.
+  - Stack Tower: the score moves below the platform status line.
+  - Tic-Tac-Toe has no 2D HUD (its scoreboard and options are in 3D).
+  - Launcher: one column of wide cards.
+  - Touch camera ("Play without AR"): keeps the horizontal field of view in
+    portrait, so the board fits the narrow screen.
+  The tests assert that every HUD is inside a 1080 x 2340 and a 2340 x 1080
+  screen (with a margin) and that nothing overlaps, at every calibration
+  step.
+- **Callback and pause rule:** after the platform has re-laid out, the game
+  gets `LGGame._on_orientation_changed(portrait)` (and the
+  `orientation_changed` signal; `is_portrait()` is valid from
+  `_on_board_ready()` on). The platform does **not** pause games: a board
+  game simply continues. **Mage Run pauses itself** in that callback: it
+  freezes the run, shows "Paused" with a Resume button, and resumes with a
+  3-2-1 countdown, so a rotation never causes a crash. (An app pause, e.g.
+  the phone locking, pauses through `_on_paused` as before.)
+- **Anchor preserved:** a rotation changes nothing in the world. The ARCore
+  anchor, the world anchor node and the board's pose are untouched; only
+  the camera projection and the screen mapping change (tested: the locked
+  board's world transform is identical through landscape -> portrait ->
+  reverse landscape -> landscape, and no new anchor is made).
+- **ARCore display rotation** (patch in `tools/arcore_plugin/lg-arcore.patch`):
+  - The upstream plugin hard-codes `ArSession_setDisplayGeometry(ROTATION_90,
+    ...)` and Godot 4.4.1's camera-feed background (`feed.glsl`) draws the
+    texture with no UV transform, so it cannot show a rotated image.
+  - The patch adds `getDisplayRotation()` (Kotlin, `Surface.ROTATION_*`) and
+    `ARCoreInterface.set_display_rotation()` /
+    `get_background_uvs()` / `uses_custom_background()`. `ARSession` polls
+    the rotation every 0.1 s (a 180-degree flip keeps the window size) and
+    passes it on.
+  - **Landscape (`ROTATION_90`) keeps the original, field-tested path**
+    unchanged: the stretched feed with a texture-aspect display.
+  - **Any other rotation:** ARCore gets the real rotation and window size;
+    its projection, view matrix (display-oriented) and hit tests then
+    describe a centre crop of the rotated image. Each frame the plugin
+    reports the camera-texture UVs of the four screen corners
+    (`ArFrame_transformCoordinates2d`), and `PassthroughBackground` draws
+    the external camera texture (`samplerExternalOES` through a
+    `CameraTexture`) with those UVs on a background canvas layer
+    (`Environment.BG_CANVAS`), so the 3D scene renders on top. Until the
+    first rotated UVs arrive the old background stays (no black frame).
 
 ### 10.3 Touch and ScreenRay mapping after rotation
 
-- `ScreenRay.ray()` and `GameHost.screen_to_board()` use the camera's
-  current projection and viewport size, so they are correct as long as the
-  XR projection is refreshed after rotation (ARCore projection) and the
-  viewport size is read live. No cached screen sizes (audit `tap_slop`,
-  `TapProbe`, the fit handles and the gesture tracker).
-- The tap slop and swipe thresholds are in **inches -> pixels**, recomputed
-  on `size_changed` (DPI does not change, the window size does).
+- `ScreenRay.ray()` and `GameHost.screen_to_board()` read the camera's
+  current projection (ARCore's, refreshed every frame) and the live viewport
+  size, so they need no change; the tests tap every tic-tac-toe cell
+  through the phone input path (window pixels, content scale) in AR in
+  landscape, after turning to portrait and after turning back: all hit,
+  with under 1 px of reprojection error (and the touch camera's tap mapping
+  is checked in portrait). Taps after a 180-degree flip are only checked on
+  the device (10.6).
+- Audit: the fit handles, the tap probe and the AR hit tests use the live
+  viewport and normalized coordinates (no cached screen sizes). The tap
+  slop and the swipe threshold are in inches -> pixels and are recomputed on
+  every rotation.
 
 ### 10.4 Screen-space swipes
 
-- A new `LGGame.captures_swipes() -> bool` hook. When true, `GameHost` runs a
-  `SwipeDetector` (pure input maths beside `GestureTracker`, unit-tested
-  headless) on single-finger strokes and calls
-  `_on_swipe(direction: Vector2i, info: Dictionary)` (direction is one of
-  the four screen directions; `info` holds velocity and time). Taps still
-  arrive as `_on_box_ray` / `_on_board_tap`, and the touch camera does not
-  orbit from those strokes.
+- `LGGame.captures_swipes() -> bool` (default false) and
+  `_on_swipe(direction: Vector2i, info: Dictionary)`: `direction` is
+  `Vector2i.LEFT` / `RIGHT` / `UP` / `DOWN` as the screen is held; `info`
+  has `velocity` (px/s), `time`, `from`, `to`, `distance` and `index`
+  (0 = first swipe of the stroke).
+- `SwipeDetector` (pure, beside `GestureTracker`): one finger, at least
+  **0.28 in** (dpi-based, recomputed per screen) within **0.25 s**, dominant
+  axis at least **1.4x** the other, **fires on the threshold** (not on
+  lift), one swipe per stroke except a full reversal ("S" strokes), a second
+  finger cancels the stroke, slow strokes are drags.
+- While a game captures swipes, `GameHost` feeds every touch to the detector
+  as well as the gesture tracker: taps still arrive as `_on_box_ray` /
+  `_on_board_tap`, and strokes never orbit the touch camera. No swipes while
+  the game is not playing.
+- `SwipeBuffer`: the 0.15 s input buffer from section 4 (latest swipe wins),
+  for Mage Run's state machine.
 
 ### 10.5 Tests
 
 | Suite | What |
 | --- | --- |
-| `swipe_tests` | Thresholds in inches at several DPIs; dominant-axis rule; fire on threshold; S-strokes; taps not swipes; buffering; two fingers ignored |
-| `orientation_tests` | Manifest validation; host applies and restores orientation (a fake DisplayServer wrapper); HUD layouts at 1080x2340 and 2340x1080; tap-to-board mapping identical before / after a simulated rotation; locked board world pose unchanged |
-| `view_tests` (extend) | Portrait passthrough / projection registration |
-| `mage_run_tests` | Lane / row state machine; jump to row; ramp; drop; collapsing tile; coyote and buffer; collision and stumble; chunk validator (always a safe path, reaction time, join rules); seeded generation is deterministic; score and multiplier; power-ups; everything inside the box; dissolve at the box edges; pause / resume; Style toggle |
+| `swipe_tests` (new) | Thresholds in inches at 160 / 420 dpi and in portrait; dominant axis; fire on threshold; slow strokes; S-strokes; taps not swipes; two fingers; the buffer; routing through `GameHost` (no orbit, taps kept, nothing while paused) |
+| `orientation_tests` (new) | Manifest field and validation; apply on load / restore on exit (OS call recorded); simulated rotations (root window 2340x1080 <-> 1080x2340): base swap, one callback per turn, UI fade; every HUD inside the screen without overlaps in both shapes (host, AR calibration steps, debug line, Stack Tower, launcher); AR: ARCore told the rotation, portrait passthrough on the background canvas, board and anchor unmoved, cell taps exact before / after; reverse landscape; landscape-only plugin builds |
+| `view_tests` (extended) | Portrait: ARCore's rotated centre crop drawn through the passthrough shader's UV interpolation, content on the video pixel (< 1 px) and taps hitting (< 2 mm); the unrotated landscape feed would be off by more than 100 px |
+| `mage_run_tests` (M4+) | Lane / row state machine; jump to row; ramp; drop; collapsing tile; coyote and buffer; collision and stumble; chunk validator (always a safe path, reaction time, join rules); seeded generation is deterministic; score and multiplier; power-ups; everything inside the box; dissolve at the box edges; pause / resume and the rotation pause with countdown; Style toggle |
+
+### 10.6 Device checks still needed
+
+Headless tests cannot run ARCore or the GPU path, so on a phone check:
+
+1. Portrait AR: the camera image is upright, not mirrored, fills the screen
+   (centre crop) and the board sits on the table without swimming. This
+   proves the UV convention of the external texture in our shader and
+   `Environment.BG_CANVAS` under XR rendering.
+2. Rotate with the board locked: the board stays put, the AR session keeps
+   running (no Activity restart), taps land on the right cell in portrait.
+3. 180-degree flips (landscape <-> reverse landscape, portrait upside down
+   if the phone allows it): the image follows within about 0.1 s.
+4. The launcher and each game in portrait and landscape, and the UI fade.
+5. Performance: the portrait passthrough is one full-screen textured quad
+   (comparable to the landscape feed draw).
 
 ---
 
 ## 11. Implementation milestones
 
-| # | Milestone | Done when |
-| --- | --- | --- |
-| **M0** | This doc, reviewed | Open questions answered |
-| **M1** | Platform: orientation in the manifest, GameHost apply / restore, sensor-landscape export, HUD re-layout on rotation, `orientation_tests` | Existing games unchanged in landscape; a probe portrait game rotates and keeps its anchor |
-| **M2** | Platform: ARCore display geometry for portrait, passthrough registration, `view_tests` portrait | Taps land on the right cell in portrait AR (field test) |
-| **M3** | Platform: `SwipeDetector` + `captures_swipes()` / `_on_swipe`, `swipe_tests` | Swipes at 160 / 420 dpi pass |
-| **M4** | Mage Run greybox: board, box, treadmill, 3 ground lanes, lane change / jump / slide with buffering, boxes for obstacles, collision, game over / restart, score | Playable on the phone in portrait |
-| **M5** | Chunks + validator + seeded generator, difficulty curve, coin lines | Validator proves a safe path for every template |
-| **M6** | Hologram rows: tiles, ramps, jump-to-row, drop, collapsing tiles, row coin multipliers | Rows unlock at the distance thresholds |
-| **M7** | Art pass: procedural wizard, props, road, castle, sparkle trail, dissolve; budget check on device | <= 120 draw calls, 60 fps on the target phone |
-| **M8** | Staff meter + power-ups, HUD (coins, score, pause, staff), Hologram / Solid world toggle | |
-| **M9** | Audio helper + SFX / music (CC0) | |
-| **M10** | Polish, tuning, release build, field test | |
+| # | Milestone | Done when | Status |
+| --- | --- | --- | --- |
+| **M0** | This doc, reviewed | Open questions answered | **Done** (decisions at the top) |
+| **M1** | Platform: orientation in the manifest (default `either`), GameHost apply / restore, full-sensor project default, base-canvas swap + UI fade, HUD re-layout (platform, Tic-Tac-Toe, Stack Tower, launcher), `orientation_changed` hook, `orientation_tests` | Existing games unchanged in landscape and laid out in portrait; a probe game rotates and keeps its anchor | **Done** on `mage-run` (headless); device check 10.6 |
+| **M2** | Platform: ARCore display rotation (plugin patch), portrait passthrough, registration, `view_tests` portrait | Taps land on the right cell in portrait AR (field test) | **Done** on `mage-run` (headless); field test pending |
+| **M3** | Platform: `SwipeDetector` + `captures_swipes()` / `_on_swipe`, `SwipeBuffer`, `swipe_tests` | Swipes at 160 / 420 dpi pass | **Done** on `mage-run` |
+| **M4** | Mage Run greybox: board, box, treadmill, 3 ground lanes, lane change / jump / slide with buffering, boxes for obstacles, collision, game over / restart, score, rotation pause + countdown | Playable on the phone, best in portrait | Next |
+| **M5** | Chunks + validator + seeded generator, difficulty curve, coin lines | Validator proves a safe path for every template | |
+| **M6** | Arcane rows (2 rows x 3 lanes): tiles, ramps, jump-to-row, drop, collapsing tiles, row coin multipliers | Rows unlock at the distance thresholds | |
+| **M7** | Art pass: procedural wizard, props, road, castle, sparkle trail, dissolve; budget check on device | <= 120 draw calls, 60 fps on the target phone | |
+| **M8** | Staff meter + power-ups, HUD (coins, score, pause, staff, arcane row indicator), Hologram / Solid world toggle | **First playable** (silent) | |
+| **M9** | Audio helper + SFX / music (CC0) | | Later: out of scope for the first playable |
+| **M10** | Polish, tuning, release build, field test | | |
 
 ---
 
-## 12. Open questions
+## 12. Decisions and open questions
 
-1. **Rows**: is "up to 3 rows" ground + 2 hologram rows (proposed, fits the
-   0.40 m box), or ground + 3 hologram rows (needs about 0.5 m and a busier
-   screen)?
+### Decided
+
+| # | Question | Decision |
+| --- | --- | --- |
+| 1 | Rows: ground + 2 or ground + 3? | **Ground + 2 holographic "arcane rows", 3 lanes each (9 lanes).** Named *arcane rows* in the doc and UI. |
+| 3 | Orientation of the other games | **All games work in either orientation by default**; a manifest may opt out. Tic-Tac-Toe and Stack Tower are `either` (done); Tattoo Studio follows on its branch. |
+| 4 | Rotation mid-run | **Pause** (Resume + 3-2-1 countdown). Platform rule: every game gets `_on_orientation_changed`; Mage Run pauses there. |
+| 10 | Audio for the first playable | **Not needed for now**: out of scope for the first playable (M9 later). |
+
+### Still open
+
 2. **World scale**: is 1 run metre = 0.25 m of board depth right? Real
    Subway Surfers reaction distances need a long visible road; on a 60 cm
    diorama the far end is only about 2.4 run metres away. Options: a longer
    board (0.3 x 0.9 m), compressed perspective toward the castle, or slower
    top speeds.
-3. **Orientation of the other games**: should Tic-Tac-Toe, Stack Tower and
-   Tattoo Studio become `either` (needs portrait HUD layouts), or stay
-   landscape-locked?
-4. **Rotation mid-run**: pause and count down (proposed), or ignore rotation
-   while a run is active (lock to the orientation at start)?
 5. **Taps**: offer "Tap to jump / side taps to change lane" as an
    accessibility mode?
 6. **Power-up choice**: is the cast power-up automatic (chosen by the
@@ -563,8 +669,6 @@ of the GPU.
    Kenney) be used for crates, barrels and the carriage?
 9. **Floor play**: should the game suggest the floor (scaled x3) for a
    "life-size lane" mode, or table only?
-10. **Audio**: is sound in scope for the first playable, and are there
-    preferences (music on or off by default)?
 11. **Multiplayer**: the platform's shared-anchor goal. Is there a later
     "ghost race" (two phones, one board)? This would affect the seeded
     generator (shared seed) now.
