@@ -128,6 +128,13 @@ func board_surface_height() -> float:
 	return 0.0
 
 
+## Board-space height the "Play without AR" camera should keep centred (e.g.
+## the top of a growing tower); the camera eases its orbit centre there.
+## < 0 (default) = the platform's fixed framing. Ignored in AR.
+func view_focus_height() -> float:
+	return -1.0
+
+
 ## Return true to receive one-finger drags; otherwise the platform uses them
 ## (e.g. to orbit the touch camera outside AR).
 func captures_drag() -> bool:

@@ -26,6 +26,11 @@ extends Resource
 @export var box_height: float = 0.0
 @export var box_min_height: float = 0.0
 @export var box_max_height: float = 0.0
+## Tall-box exception for games meant to stand on the FLOOR at life size
+## (e.g. a 1.8 m figure): the cap becomes 4 x the longer side, at most
+## PlayBox.TALL_MAX_HEIGHT (3.0 m). On a table the player's placement scale
+## shrinks the whole box as usual. Keep it off for table games.
+@export var tall_box: bool = false
 ## Entry point: a .tscn whose root script extends LGGame, or a .gd script
 ## that extends LGGame.
 @export_file("*.tscn", "*.gd") var entry: String = ""
@@ -59,6 +64,8 @@ func validate() -> PackedStringArray:
 		errors.append("box heights must be >= 0 (0 = default)")
 	elif box_min_height > 0.0 and box_max_height > 0.0 and box_min_height > box_max_height:
 		errors.append("box_min_height must be <= box_max_height")
+	elif tall_box and maxf(box_height, box_max_height) > PlayBox.TALL_MAX_HEIGHT + 0.0001:
+		errors.append("tall_box heights must be <= %.1f m" % PlayBox.TALL_MAX_HEIGHT)
 	if entry.is_empty():
 		errors.append("entry is empty")
 	elif not (entry.ends_with(".tscn") or entry.ends_with(".gd")):

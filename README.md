@@ -11,8 +11,9 @@ goal: players in the same room share one anchored board, and each sees it
 from their own phone's position.
 
 **Status:** early. The platform layer (ARCore, calibration, anchoring), the
-game contract, the launcher, and two games are in place. *Tic-Tac-Toe* is a
-sample that proves the contract. *Competitive Evolution* is a placeholder
+game contract, the launcher, and three games are in place. *Tic-Tac-Toe* is a
+sample that proves the contract. *Stack Tower* is a one-player timing game in
+a tall simulation box. *Competitive Evolution* is a placeholder
 board; the full game lives in
 [Competitive-evolution-AGR](https://github.com/Systematic-creator/Competitive-evolution-AGR)
 and is on hiatus until it gets imported here.
@@ -308,7 +309,11 @@ Shortcuts on `LGGame`: `box_contains(point)`, `clamp_to_box(point)`.
 side)` (board units, so it scales with the board) and is at least 2 cm. The
 player's choice (the Airspace slider, shown only if min < max) stays within
 the game's range; it is saved with the placement (`box_height`, -1 = the
-game's preferred height).
+game's preferred height). **Tall-box exception:** a manifest with
+`tall_box = true` (games that need a high airspace, e.g. Stack Tower) is capped
+at `min(3.0 m, 4 x the long side)` instead (`PlayBox.TALL_MAX_HEIGHT`,
+`TALL_HEIGHT_RATIO`); on a table the placement scale shrinks the whole box
+as usual. `validate()` rejects tall-box heights over 3.0 m.
 
 **Hooks** (all optional):
 
@@ -322,6 +327,11 @@ game's preferred height).
 | `_on_box_ray(origin, direction)` | Every tap while playing, as a board-space ray, just before `_on_board_tap`: pick things in the airspace (`get_box().intersect_ray()`, `ray_at_height()`, your own geometry). |
 | `_on_box_changed(box: PlayBox)` | The player changed the airspace height (after `_on_board_ready`; also the `box_changed` signal). Re-fit anything tied to the top. |
 | `_on_exit()` | Player is leaving the game. Save here. |
+
+**Touch-camera focus:** override `view_focus_height() -> float` (board space)
+to have the "Play without AR" camera ease its orbit centre to that height,
+e.g. the top of a growing tower (Stack Tower). The default (-1) keeps the
+fixed framing; AR ignores it.
 
 **Helpers:** `is_playing()`, `is_board_locked()`, `get_board_size()`,
 `is_on_board(point)`, `set_status(text)` (shown by the platform while
@@ -364,7 +374,31 @@ cells); the board footprint, play box and drop heights stay the same. A
 hologram **scoreboard** (X wins / O wins / draws) floats at the far edge
 beside the turn token. It counts every finished round for the whole app
 session (across rounds, sizes and leaving / re-opening the game) until
-**Reset score** is tapped. Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
+**Reset score** is tapped.
+
+**Stack Tower** (`games/stack_tower/`, `tall_box`) stands on a 30 cm board
+with an 80 cm airspace (adjustable 35-120 cm; 1.2 m is the 4x tall cap). A
+hologram slab slides back and forth over the tower top, alternating X and Z,
+and a tap anywhere (the `_on_box_ray` hook) drops it: the part hanging past
+the slab below is sliced off (`StackTowerGame.slice`) and tumbles away as
+debris that falls, spins and fades in about a second while kept inside the
+box. The rest becomes the new top and lands with the `HoloSplash` dust cloud
+in the layer's colour. Missing completely ends the game. A drop within about
+4 mm (1.3% of the board) is **perfect**: it snaps exactly, adds a streak bonus
+(+1, +2, then +3 per perfect), flashes with a gold pulse, and from the third
+perfect in a row regrows the slab by 9 mm each way, up to the base size. The
+base is 65% of the board's short side and layers are 7.5% of it (2.25 cm),
+so every size is board-relative and the game plays the same on a table or
+scaled up on the floor. Sweeps get faster with height (1.6 s per sweep,
+0.03 s less per layer, at least 0.6 s), and layer colours shift through a
+cyan, blue, magenta and gold gradient. Near the box lid the whole tower sinks,
+always leaving two free layers under the lid, so play never ends for height
+and never leaves the box. Layers that sink into the pedestal are freed. The
+HUD shows score, height, session best and the perfect streak; a Game over
+panel has Restart (a tap anywhere also restarts after 0.6 s). Outside AR the
+touch camera follows the tower top.
+
+Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
 50-60 cm) and keeps its label under the top.
 
 ### Hologram look (`platform/visual/`)
@@ -461,7 +495,11 @@ the unlocked height guard, the deadband, the covered-camera recovery on a
 matching plane, Re-place on table with the kept outline, loss and low-light
 messages, the debug overlay), `box_tests` (the play box: maths and caps, manifest limits,
 the game API and hooks, the Airspace slider, persistence across pause /
-resume / re-place / sessions, outline levels, tap rays, the games' boxes).
+resume / re-place / sessions, outline levels, tap rays, the games' boxes),
+`stack_tests` (Stack Tower: slicing maths, perfect tolerance, streak bonus
+and regrow, miss / game over / restart, scoring and session best, sweep
+speed, tap-anywhere, debris and sliding slabs inside the box, the tower
+sinking under the lid, the touch camera following the top).
 Leaked-RID messages at exit are harmless.
 
 ## Android build
