@@ -222,8 +222,8 @@ func _test_tap_routing() -> void:
 	var host: GameHost = await make_host(&"tic_tac_toe")
 	var game: TicTacToeGame = host.game as TicTacToeGame
 	var camera: Camera3D = host.active_camera()
-	var centre_screen: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_center(4)))
-	var point: Variant = GameHost.screen_to_board(camera, game, centre_screen)
+	var centre_screen: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_top(4)))
+	var point: Variant = GameHost.screen_to_board(camera, game, centre_screen, game.board_surface_height())
 	check("input: a screen point maps to the board point under it", (
 		point != null and near(point as Vector3, TicTacToeGame.cell_center(4), 0.002)
 	))
@@ -232,17 +232,17 @@ func _test_tap_routing() -> void:
 	host.session.placement.scale = 2.0
 	host.pivot.transform = host.session.placement.pivot_transform()
 	await frames(1)
-	var corner_screen: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_center(0)))
+	var corner_screen: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_top(0)))
 	host.route_gesture({"kind": &"tap", "position": corner_screen})
 	check("input: taps stay in board space when the board is resized", game.rules.cells[0] == TicTacToeRules.Mark.O)
 	host.pivot.transform = Transform3D.IDENTITY
 	await frames(1)
 	host.orbit_camera.orbit(Vector2(120.0, 0.0))
-	var screen: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_center(8)))
+	var screen: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_top(8)))
 	host.route_gesture({"kind": &"tap", "position": screen})
 	check("input: taps still land after orbiting the camera", game.rules.cells[8] == TicTacToeRules.Mark.X)
 	game.lg_set_app_paused(true)
-	var screen_2: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_center(2)))
+	var screen_2: Vector2 = camera.unproject_position(game.to_global(TicTacToeGame.cell_top(2)))
 	host.route_gesture({"kind": &"tap", "position": screen_2})
 	check("input: a paused game ignores taps", game.rules.cells[2] == TicTacToeRules.Mark.NONE and host.get_status_text().begins_with("Paused"))
 	game.lg_set_app_paused(false)

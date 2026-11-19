@@ -39,8 +39,11 @@ platform/
   ar/board_placement.gd   player's offset / rotation / size, saved per game
   ar/gesture_tracker.gd   tap / drag / pinch+twist from raw touches
   ar/surface_region.gd    play-area polygon: fit / clamp the board footprint
+  visual/holo.gd          Holo: shared hologram materials, glow base, bars, ripples
+  visual/holo_drop.gd     HoloDrop: drop-in animation (fall, squash, flash, ripple)
+  visual/*.gdshader       the two hologram shaders (Compatibility-renderer safe)
 games/
-  tic_tac_toe/            sample game
+  tic_tac_toe/            sample game (hologram board)
   competitive_evolution/  placeholder adapter
 addons/ARCorePlugin/      Android export plugin (binaries are built, not committed)
 tools/arcore_plugin/      ARCore plugin build script + patch
@@ -73,13 +76,21 @@ space** and reacts to lifecycle hooks and board-space taps.
    down) and **Play without AR** are offered.
 2. **Trace the play area (recommended).** Tap **Trace play area** and run a
    finger around the edge of the table / board you want to play on. The first
-   touch must land on a detected surface; that sets the trace height. Every
+   touch must land on a detected surface (or, where ARCore has no plane yet,
+   within 60 cm of the reticle's surface); that sets the trace height. Every
    later point is projected onto that height (so you can trace right along a
-   real edge), and points over a clearly higher object are dropped. **Done**
-   closes the outline (at least 3 points), the board is auto-fitted (size up to
-   2x the game's native size, rotated to the outline's long axis) and the
-   outline stays visible while unlocked. The outline is kept for the session:
-   the next game offers **Use traced area**.
+   real edge). Dropped: points over a clearly higher object (> 4 cm), rays
+   longer than 2.5 m, single stray jumps (> 30 cm in one step; three in a row
+   are followed), and points whose ray hits no surface more than 15 cm from
+   the last point that did. Lifting the finger and touching down again within
+   15 cm continues the line; farther away starts a new outline (two strokes
+   are never joined by a straight line). Feature-point dots are hidden while
+   tracing. **Done** (or closing the loop) re-projects the stroke at the
+   refined surface height (median of all stroke hits), the board is anchored
+   to the detected surface under the outline's centre and auto-fitted (never
+   bigger than the game's own size, rotated to the outline's long axis), and
+   the outline stays visible while unlocked. The outline is kept for the
+   session: the next game offers **Use traced area**.
    *Skip:* tap **Place here** (or the screen) to place on the reticle instead.
    The board is then fitted and kept inside the selected ARCore plane's
    boundary.
@@ -89,15 +100,38 @@ space** and reacts to lifecycle hooks and board-space taps.
    of hanging off it. **Lock** starts the game. **Unlock** pauses it to adjust
    again; **Re-place** goes back to step 1.
 
+**Staying put once locked.** Lock re-anchors the ARCore anchor exactly under
+the board's final spot (the drag offset is baked in; the board does not
+move), so the anchor and the board coincide. After that the board follows only
+that anchor's pose: never the camera, never plane re-estimation (the play
+area is not re-clamped while locked), and the XR origin is never moved. If
+the anchor stops tracking, the board holds its last pose; when tracking
+returns, small ARCore corrections (< 3 cm) apply at once and bigger ones ease
+in over ~0.1 s. If the *camera* loses tracking for over 0.5 s, the board is
+hidden ("Tracking lost") instead of sliding along with the frozen camera, and
+comes back when tracking does.
+
 If ARCore is not tracking yet, *Place in front of me* holds the board in front
 of the camera (so it never slides away) and turns it into a world anchor
 after one second of continuous tracking. Tap the step panel **five times** to
 show the AR debug line (it also appears by itself after the scan timeout and
 in debuggable builds).
-The debug line also shows the play-area source and size (`area traced 0.42m²`
-/ `area plane ...`) and tap counters (`taps N/M last x,z`: taps that hit the board / taps
-seen, last board-space point). Every tap on the board shows a
-short white ring where it landed.
+The debug line also shows, once the board is placed:
+
+- `anc T plane`: anchor tracking (T tracking, P paused, S stopped) and how it
+  was made (`plane` = attached to a detected surface, `free` = world pose,
+  `held` = camera-held, not anchored yet);
+- `d 0.2/3.1mm`: how far the anchor pose moved this frame / at most in the
+  last 3 s; `lock 4mm`: total anchor movement since Lock (should stay near 0);
+- `board x,y,z`: the board centre in world metres;
+- `surf +0.3cm`: board height above the detected surface under its centre
+  (a few cm off means the board floats over / sinks into the real surface,
+  which looks like drifting as you walk around); `lost N`: camera tracking
+  losses;
+- `area traced 0.42m²` / `area plane ...`: the play area;
+- `taps N/M last x,z`: taps that hit the board / taps seen, last board-space
+  point. Every tap on the board shows a short white ring where it landed (on
+  the board's tap surface).
 
 The game does not play while the board is being placed: `LGGame.is_playing()`
 is true only when the board is locked and the app is in the foreground.
@@ -124,13 +158,44 @@ cameras, XR nodes or the game node itself; the platform moves the board.
 | `_on_board_ready()` | Added to the board, not placed or playing yet. Build your scene. |
 | `_on_board_locked()` / `_on_board_unlocked()` | Player locked / unlocked the board (fallback counts as locked). |
 | `_on_resumed()` / `_on_paused()` | `is_playing()` changed: run or freeze timers, AI, animation. |
-| `_on_board_tap(point: Vector3)` | A tap hit the board plane (board space, y = 0). Only while playing. |
+| `_on_board_tap(point: Vector3)` | A tap hit the board's tap surface (board space; returned with y = 0). Only while playing. |
 | `_on_board_drag(from, to)` | One-finger drag in board space, if `captures_drag()` returns true. |
 | `_on_exit()` | Player is leaving the game. Save here. |
 
 **Helpers:** `is_playing()`, `is_board_locked()`, `get_board_size()`,
-`is_on_board(point)`, `set_status(text)` (shown by the platform),
+`is_on_board(point)`, `set_status(text)` (shown by the platform while
+playing; hidden during AR calibration, prefixed "Paused" otherwise),
 `request_exit()` (back to the catalog).
+
+**Raised boards:** override `board_surface_height() -> float` (board space,
+metres at scale 1) when the surface players tap is above the table, e.g. a
+floating slab. The platform casts the finger's ray onto that plane; at a low
+phone angle, a 2.6 cm slab tapped on the table plane would be off by about a
+third of a tic-tac-toe cell.
+
+### Hologram look (`platform/visual/`)
+
+Games share one projected-hologram style ("Card Wars" style) through `Holo`
+and `HoloDrop`. Everything is unlit, alpha-blended without depth writes (keeps
+its colour over a bright camera image, never needs lights), uses two small
+Compatibility-renderer shaders and no textures, so it stays cheap on a
+mid-range phone.
+
+| Helper | What |
+| --- | --- |
+| `Holo.material(color, fill, rim, intensity)` | See-through body: faint fill, fresnel rim, screen scanlines, a sweep band, faint flicker; `flash` parameter for hits. |
+| `Holo.line_material(color, intensity)` | Solid glowing lines and edges. |
+| `Holo.glow_base(board_size)` | Soft projector glow (with a faint grid) on the table under the board. |
+| `Holo.bar(from, to, thickness, material)` | A glowing bar between two points (grid lines, frames, win lines). |
+| `Holo.ripple(color, radius)` | Landing ring, animated by `HoloDrop`. |
+| `HoloDrop.start(body, height, ripple)` | Drop-in: gravity fall, squash and spring on landing, flash, ripple; signals `landed` / `finished`. `HoloDrop.curve(t, height)` is pure for tests. |
+| `Holo.CYAN`, `MAGENTA`, `GOLD`, `GREEN` | The palette. |
+
+Materials are new instances, so animating one piece (flash, intensity) never
+touches another. Shaders: `holo.gdshader` (surfaces) and `holo_disc.gdshader`
+(flat glows, ripples). Tic-Tac-Toe is the worked example: a slab floating
+2.6 cm over the glow, emissive grid, 3D X (crossed bars) and O (torus) that
+drop in, a gold win line, and a small spinning turn token on the far edge.
 
 ### Add a game
 
@@ -178,7 +243,11 @@ Suites: `smoke_test` (boot, launcher, every game launches), `platform_tests`
 (manifests, catalog, LGGame contract, launching onto the board, input
 routing in board space, AR launch lifecycle), `ar_tests` (AR layer ported from
 AGR: anchors, placement, gestures, calibration, the board not following the
-camera). Leaked-RID messages at exit are harmless.
+camera), `surface_tests` (play area: plane selection, tracing, clamping, a
+plywood-on-driveway scene model, screen-touch taps), `field_tests` (phone
+field-test regressions: Android touch sequences, trace robustness, world lock
+under camera motion / plane refinement / tracking loss, drift readout, the
+hologram board). Leaked-RID messages at exit are harmless.
 
 ## Android build
 

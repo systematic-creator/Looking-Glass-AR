@@ -29,12 +29,19 @@ extends Node3D
 ## Input arrives in board space, only while playing:
 ##   _on_board_tap(point)            a tap hit the board plane at `point`.
 ##   _on_board_drag(from, to)        a one-finger drag, if captures_drag().
-## Points are Vector3 in board space with y = 0 (the surface).
+## Points are Vector3 in board space with y = 0. The platform finds them by
+## casting the finger's ray onto the plane y = board_surface_height(), so a
+## raised board (a slab, a table top) takes taps where the player sees its top.
+##
+## Look: platform/visual/ has the shared hologram kit (Holo, HoloDrop) so
+## every game can share the same projected-hologram style.
 
 ## Ask the platform to close the game and return to the catalog.
 signal exit_requested()
 ## A short line the platform shows under the game (turn, score, hints).
 signal status_changed(text: String)
+## is_playing() changed (the platform refreshes its status line).
+signal playing_changed(playing: bool)
 
 ## Set by the platform before the game enters the tree.
 var manifest: LGGameManifest
@@ -78,6 +85,12 @@ func _on_board_tap(_point: Vector3) -> void:
 
 func _on_board_drag(_from: Vector3, _to: Vector3) -> void:
 	pass
+
+
+## Height (board space, metres at scale 1) of the surface players tap, e.g.
+## the top of a raised board. Taps are projected onto this plane.
+func board_surface_height() -> float:
+	return 0.0
 
 
 ## Return true to receive one-finger drags; otherwise the platform uses them
@@ -167,6 +180,7 @@ func lg_exit() -> void:
 	if _playing:
 		_playing = false
 		_on_paused()
+		playing_changed.emit(false)
 	_on_exit()
 
 
@@ -179,3 +193,4 @@ func _update_playing() -> void:
 		_on_resumed()
 	else:
 		_on_paused()
+	playing_changed.emit(playing)

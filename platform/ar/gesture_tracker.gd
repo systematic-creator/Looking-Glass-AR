@@ -4,7 +4,8 @@ extends RefCounted
 ## Pure input math, no scene access, so it is unit-tested headless.
 ##
 ## handle() returns {} or one of:
-##   {"kind": &"tap", "position": Vector2}
+##   {"kind": &"tap", "position": Vector2}   (where the finger went down:
+##                                            what the player aimed at)
 ##   {"kind": &"drag", "from": Vector2, "to": Vector2}
 ##   {"kind": &"pinch", "scale": float, "twist": float}  (twist: radians,
 ##   positive = clockwise on screen)
@@ -49,9 +50,14 @@ func handle(event: InputEvent) -> Dictionary:
 			return {}
 		var was_single: bool = _touches.size() == 1
 		_touches.erase(touch.index)
-		if was_single and _tap_possible:
+		if touch.canceled:
+			# The OS took the touch (a system gesture, a palm): never a tap.
 			_tap_possible = false
-			return {"kind": &"tap", "position": touch.position}
+			return {}
+		if was_single and _tap_possible and touch.position.distance_to(_tap_start) <= tap_slop_px:
+			_tap_possible = false
+			return {"kind": &"tap", "position": _tap_start}
+		_tap_possible = false
 		return {}
 	if event is InputEventScreenDrag:
 		var drag: InputEventScreenDrag = event

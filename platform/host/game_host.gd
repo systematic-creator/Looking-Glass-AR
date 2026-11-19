@@ -105,10 +105,11 @@ func _load_game() -> bool:
 	game_id = id
 	game.name = "Game"
 	pivot.add_child(game)
-	game.status_changed.connect(func(text: String) -> void: _status_label.text = text)
+	game.status_changed.connect(func(_text: String) -> void: refresh_status())
+	game.playing_changed.connect(func(_playing: bool) -> void: refresh_status())
 	game.exit_requested.connect(exit_game)
 	game.lg_board_ready()
-	_status_label.text = game.get_status()
+	refresh_status()
 	game_loaded.emit(game)
 	return true
 
@@ -118,6 +119,22 @@ func _on_board_lock_changed(locked: bool) -> void:
 		game.lg_set_locked(locked)
 	_dragging_board = false
 	_gestures.reset()
+	refresh_status()
+
+
+## The game's status line. While the AR board is being placed / adjusted the
+## calibration banner does the talking, so the line is hidden (no misleading
+## "Paused"); a game paused for another reason (app in background, waiting
+## for the camera) says "Paused".
+func refresh_status() -> void:
+	if game == null or _status_label == null:
+		return
+	var text: String = game.get_status()
+	var calibrating: bool = session != null and session.is_ar() and not session.is_board_locked()
+	_status_label.visible = not calibrating
+	if not game.is_playing() and not calibrating and not text.is_empty():
+		text = "Paused · " + text
+	_status_label.text = text
 
 
 ## Close the game and give the AR session back, then go to the catalog.
@@ -145,16 +162,19 @@ func _notification(what: int) -> void:
 		game.lg_set_app_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
 		game.lg_set_app_paused(false)
+	refresh_status()
 
 
 # --- Input routing --------------------------------------------------------------
 
-## Screen point -> board-space point on the board plane (y = 0), or null.
-static func screen_to_board(camera: Camera3D, board: Node3D, screen: Vector2) -> Variant:
+## Screen point -> board-space point (returned with y = 0) where the finger's
+## ray meets the board's tap surface, the plane y = `surface_height` in board
+## space (LGGame.board_surface_height(): the top of a raised board), or null.
+static func screen_to_board(camera: Camera3D, board: Node3D, screen: Vector2, surface_height: float = 0.0) -> Variant:
 	if camera == null or board == null:
 		return null
 	var up: Vector3 = board.global_transform.basis.y.normalized()
-	var ground := Plane(up, board.global_position)
+	var ground := Plane(up, board.to_global(Vector3(0.0, surface_height, 0.0)))
 	var hit: Variant = ground.intersects_ray(camera.project_ray_origin(screen), camera.project_ray_normal(screen))
 	if hit == null:
 		return null
@@ -169,7 +189,7 @@ func active_camera() -> Camera3D:
 	return orbit_camera.camera
 
 
-## Tap slop in viewport pixels for this screen: about 3 mm of finger wobble
+## Tap slop in viewport pixels for this screen: about 4 mm of finger wobble
 ## (phones have ~400+ dpi, and the viewport is scaled from 720p).
 func tap_slop_for_screen() -> float:
 	var dpi: float = float(DisplayServer.screen_get_dpi())
@@ -177,8 +197,8 @@ func tap_slop_for_screen() -> float:
 	var view_height: float = get_viewport().get_visible_rect().size.y
 	if dpi <= 0.0 or window_height <= 0.0 or view_height <= 0.0:
 		return GestureTracker.TAP_SLOP_PX
-	var physical_px: float = dpi * 0.12
-	return clampf(physical_px * view_height / window_height, GestureTracker.TAP_SLOP_PX, 64.0)
+	var physical_px: float = dpi * 0.16
+	return clampf(physical_px * view_height / window_height, GestureTracker.TAP_SLOP_PX, 72.0)
 
 
 ## True if a screen point is on platform UI (back button, AR buttons, the
@@ -219,7 +239,7 @@ func route_gesture(gesture: Dictionary) -> void:
 		&"tap":
 			_dragging_board = false
 			taps_seen += 1
-			var point: Variant = screen_to_board(camera, game, gesture["position"] as Vector2)
+			var point: Variant = screen_to_board(camera, game, gesture["position"] as Vector2, game.board_surface_height())
 			last_tap_point = point
 			if point != null:
 				taps_on_board += 1
@@ -228,8 +248,8 @@ func route_gesture(gesture: Dictionary) -> void:
 			_update_tap_debug()
 		&"drag":
 			if game.captures_drag() and game.is_playing():
-				var from: Variant = screen_to_board(camera, game, gesture["from"] as Vector2)
-				var to: Variant = screen_to_board(camera, game, gesture["to"] as Vector2)
+				var from: Variant = screen_to_board(camera, game, gesture["from"] as Vector2, game.board_surface_height())
+				var to: Variant = screen_to_board(camera, game, gesture["to"] as Vector2, game.board_surface_height())
 				if from != null and to != null:
 					game.lg_drag(from as Vector3, to as Vector3)
 			elif not session.is_ar():
@@ -265,7 +285,7 @@ func _show_tap_marker(point: Vector3) -> void:
 		material.no_depth_test = true
 		_tap_marker.material_override = material
 		game.add_sibling(_tap_marker)
-	_tap_marker.position = point + Vector3(0.0, 0.03, 0.0)
+	_tap_marker.position = point + Vector3(0.0, game.board_surface_height() + 0.004, 0.0)
 	_tap_marker.visible = true
 	_tap_marker_time = 0.5
 

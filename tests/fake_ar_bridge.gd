@@ -14,6 +14,13 @@ var release_count: int = 0
 var hit_callback: Callable = Callable()
 ## Optional tracked planes; replaces the default single surface.
 var planes: Array = []
+## Anchor tracking state reported for every anchor (0 tracking, 1 paused).
+var anchor_state: int = 0
+## Applied to every reported anchor pose (simulates ARCore correcting the
+## world, or garbage poses while an anchor is not tracking).
+var pose_shift: Transform3D = Transform3D.IDENTITY
+## How anchors were made, in order: "screen" or "pose".
+var anchor_calls: Array[String] = []
 var _poses: Dictionary = {}
 var _next_id: int = 1
 
@@ -80,6 +87,8 @@ func create_anchor_at_screen(normalized_screen: Vector2) -> Dictionary:
 		return {"id": -1}
 	var pose: Transform3D = hit["pose"] as Transform3D
 	var id: int = create_anchor(pose)
+	if id >= 0:
+		anchor_calls[anchor_calls.size() - 1] = "screen"
 	return {"id": id, "pose": pose}
 
 
@@ -90,15 +99,16 @@ func create_anchor(pose: Transform3D) -> int:
 	_next_id += 1
 	_poses[id] = pose
 	anchors_made += 1
+	anchor_calls.append("pose")
 	return id
 
 
 func get_anchor_pose(anchor_id: int) -> Transform3D:
-	return _poses.get(anchor_id, Transform3D.IDENTITY) as Transform3D
+	return pose_shift * (_poses.get(anchor_id, Transform3D.IDENTITY) as Transform3D)
 
 
 func get_anchor_tracking_state(anchor_id: int) -> int:
-	return 0 if _poses.has(anchor_id) else -1
+	return anchor_state if _poses.has(anchor_id) else -1
 
 
 func remove_anchor(anchor_id: int) -> void:

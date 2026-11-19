@@ -47,7 +47,30 @@ const PLANE_HEIGHT_TOLERANCE: float = 0.03
 ## rejected (the finger is on an object standing on the play area).
 const TRACE_HEIGHT_TOLERANCE: float = 0.04
 const TRACE_MIN_SPACING: float = 0.01
-const TRACE_MAX_RADIUS: float = 3.0
+## A traced point may be at most this far from the outline's start (m).
+const TRACE_MAX_RADIUS: float = 2.0
+## ... and its ray at most this long (near-horizon touches are unreliable).
+const TRACE_MAX_DISTANCE: float = 2.5
+## One stroke step longer than this is a glitch (a stray touch, a jumpy
+## frame) and is dropped; TRACE_JUMP_STRIKES in a row mean the finger
+## really is there, so the point is then accepted.
+const TRACE_MAX_JUMP: float = 0.3
+const TRACE_JUMP_STRIKES: int = 3
+## Points whose ray hits no surface at all are kept only this close to the
+## last point that did (tracing just past an undetected edge).
+const TRACE_MISS_ALLOWANCE: float = 0.15
+## A new stroke this close to the end of the last one continues the
+## outline; farther away it starts a fresh outline (never a joining line).
+const TRACE_RESUME_RADIUS: float = 0.15
+## A first touch that hits no surface may use the reticle's surface height
+## if it is this close to the reticle's last hit.
+const TRACE_START_REACH: float = 0.6
+## Anchor corrections bigger than this (m) are eased in instead of snapped.
+const ANCHOR_SMOOTH_THRESHOLD: float = 0.03
+const ANCHOR_SMOOTH_TIME: float = 0.12
+## Camera tracking lost this long (s) hides the board instead of letting it
+## slide with the frozen camera.
+const LOST_HIDE_SECONDS: float = 0.5
 ## Drag rays flatter than this (|dot(ray, up)|) are ignored: near the horizon
 ## a finger's pixel moves the board metres.
 const MIN_RAY_ELEVATION: float = 0.12
@@ -112,7 +135,34 @@ var _trace_node: MeshInstance3D
 var _trace_points: PackedVector3Array = PackedVector3Array()
 var _trace_height: float = 0.0
 var _trace_touch: int = -1
+## Per accepted trace point: the finger's ray (XROrigin3D space) and the
+## height its hit test reported (NAN = no surface hit), so the outline can be
+## re-projected at the refined surface height when it is closed.
+var _trace_rays: Array[Dictionary] = []
+var _trace_last_supported: Vector3 = Vector3.ZERO
+var _trace_jump_strikes: int = 0
 var _region_refresh: float = 0.0
+## Last surface height seen under the reticle (XROrigin3D space).
+var _reticle_point: Vector3 = Vector3.ZERO
+var _have_reticle_point: bool = false
+## How the current anchor was made: "plane" (attached to a detected surface),
+## "free" (a world pose), "held" (camera-relative, not anchored yet).
+var anchor_kind: String = ""
+## The anchor pose actually shown (eases toward anchors.pose on big jumps).
+var shown_pose: Transform3D = Transform3D.IDENTITY
+## Drift diagnostics (see drift_debug()).
+var drift_last_mm: float = 0.0
+var drift_max_mm: float = 0.0
+var drift_since_lock_mm: float = 0.0
+var surface_gap: float = NAN
+var tracking_losses: int = 0
+var board_hidden_by_loss: bool = false
+var _drift_prev: Vector3 = Vector3.ZERO
+var _drift_have_prev: bool = false
+var _drift_window: float = 0.0
+var _lock_origin: Vector3 = Vector3.ZERO
+var _has_lock_origin: bool = false
+var _lost_seconds: float = 0.0
 
 
 static func clear_saved_area() -> void:
@@ -340,6 +390,7 @@ func place_at_reticle() -> bool:
 		return false
 	if not anchors.place_at_screen(Vector2(0.5, 0.5)):
 		return false
+	anchor_kind = "plane"
 	front_follow = false
 	flow.anchor_pending = false
 	placement.offset = Vector3.ZERO
@@ -359,11 +410,13 @@ func place_in_front() -> bool:
 		return false
 	var pose: Transform3D = _front_local_pose()
 	if flow.tracking_stable() and anchors.place_at_pose(pose):
+		anchor_kind = "free"
 		front_follow = false
 		flow.anchor_pending = false
 	else:
 		anchors.clear()
 		anchors.pose = AnchorService.upright(pose)
+		anchor_kind = "held"
 		front_follow = true
 		flow.anchor_pending = true
 	_clear_region()
@@ -383,6 +436,7 @@ func _front_local_pose() -> Transform3D:
 func _update_front_follow() -> void:
 	anchors.pose = AnchorService.upright(_front_local_pose())
 	if flow.tracking_stable() and anchors.place_at_pose(anchors.pose):
+		anchor_kind = "free"
 		front_follow = false
 		flow.anchor_pending = false
 		if hud != null:
@@ -408,6 +462,9 @@ static func front_pose(camera: Transform3D) -> Transform3D:
 func _after_placed() -> void:
 	phase = Phase.PLACED
 	flow.placed()
+	_reset_drift()
+	_has_lock_origin = false
+	board_hidden_by_loss = false
 	if reticle != null:
 		reticle.visible = false
 	if _overlay != null:
@@ -428,9 +485,13 @@ func begin_replace() -> void:
 	clear_trace()
 	flow.has_saved_area = saved_area_world.size() >= 3
 	anchors.clear()
+	anchor_kind = ""
 	phase = Phase.SEARCHING
 	placement.locked = false
 	flow.restart()
+	_reset_drift()
+	_has_lock_origin = false
+	board_hidden_by_loss = false
 	world_anchor.visible = false
 	if _overlay != null:
 		_overlay.visible = true
@@ -449,6 +510,11 @@ func recenter() -> void:
 func set_locked(locked: bool) -> void:
 	if not is_ar() or phase != Phase.PLACED:
 		return
+	if locked and not placement.locked:
+		rebase_anchor()
+		_lock_origin = anchors.pose.origin
+		_has_lock_origin = true
+		drift_since_lock_mm = 0.0
 	placement.locked = locked
 	placement.save(placement_path)
 	gestures.reset()
@@ -469,6 +535,28 @@ func _sync_play() -> void:
 		board_lock_changed.emit(locked)
 
 
+## Lock-time re-anchoring: move the anchor to the board's final spot (the
+## player's drag offset baked in), so the ARCore anchor sits exactly under
+## the board and small anchor rotations cannot swing it around. The board
+## does not move. Keeps the old anchor if ARCore cannot make a new one.
+func rebase_anchor() -> bool:
+	if front_follow or not anchors.has_anchor() or placement.offset.length() < 0.01:
+		return false
+	var offset: Vector3 = placement.offset
+	var target: Transform3D = anchors.pose * Transform3D(Basis(), offset)
+	if not anchors.place_at_pose(target):
+		return false
+	anchor_kind = "free"
+	placement.offset = Vector3.ZERO
+	if region != null:
+		var moved := PackedVector2Array()
+		for p: Vector2 in region.polygon:
+			moved.append(p - Vector2(offset.x, offset.z))
+		_set_region(SurfaceRegion.make(moved, region.source))
+	_apply_transforms()
+	return true
+
+
 ## Put the world anchor at `anchor_pose` (XROrigin3D space, made upright).
 func apply_anchor_pose(anchor_pose: Transform3D) -> void:
 	if world_anchor == null:
@@ -477,11 +565,29 @@ func apply_anchor_pose(anchor_pose: Transform3D) -> void:
 	world_anchor.global_transform = origin_xform * AnchorService.upright(anchor_pose)
 
 
-## Re-apply the anchor pose and the placement to the scene.
-func _apply_transforms() -> void:
-	apply_anchor_pose(anchors.pose)
+## Re-apply the anchor pose and the placement to the scene. With `delta`
+## (per-frame polling), large anchor corrections are eased in; otherwise the
+## shown pose snaps to the anchor.
+func _apply_transforms(delta: float = -1.0) -> void:
+	if delta < 0.0:
+		shown_pose = anchors.pose
+	else:
+		shown_pose = ease_pose(shown_pose, anchors.pose, delta)
+	apply_anchor_pose(shown_pose)
 	if pivot != null:
 		pivot.transform = placement.pivot_transform()
+
+
+## Follow an anchor correction: small ones (ARCore refining) snap, big
+## ones (tracking regained after a loss) ease in over ~ANCHOR_SMOOTH_TIME.
+static func ease_pose(shown: Transform3D, target: Transform3D, delta: float) -> Transform3D:
+	var jump: float = shown.origin.distance_to(target.origin)
+	var turn: float = absf(shown.basis.get_rotation_quaternion().angle_to(target.basis.get_rotation_quaternion()))
+	if jump <= ANCHOR_SMOOTH_THRESHOLD and turn <= deg_to_rad(3.0):
+		return target
+	var k: float = 1.0 - exp(-maxf(delta, 0.0) / ANCHOR_SMOOTH_TIME)
+	var q: Quaternion = shown.basis.get_rotation_quaternion().slerp(target.basis.get_rotation_quaternion(), k)
+	return Transform3D(Basis(q), shown.origin.lerp(target.origin, k))
 
 
 # --- Per frame ----------------------------------------------------------------
@@ -527,7 +633,11 @@ func _process(delta: float) -> void:
 		_update_front_follow()
 	else:
 		anchors.poll()
-		_apply_transforms()
+		_apply_transforms(delta)
+	_track_drift(delta)
+	_update_tracking_loss(delta)
+	if refresh:
+		surface_gap = measure_surface_gap()
 	if region != null and region.source == SurfaceRegion.Source.PLANE and not placement.locked:
 		_region_refresh += delta
 		if _region_refresh >= 1.0:
@@ -552,11 +662,14 @@ func _poll_camera_permission(delta: float) -> void:
 
 func _update_reticle() -> bool:
 	var hit: Dictionary = bridge.hit_test(Vector2(0.5, 0.5))
-	var found: bool = bool(hit.get("hit", false))
+	var pose: Variant = hit_pose(hit)
+	var found: bool = pose != null
 	reticle.visible = found
 	if found:
 		var origin_xform: Transform3D = xr_origin.global_transform
-		reticle.global_transform = origin_xform * AnchorService.upright(hit["pose"] as Transform3D)
+		reticle.global_transform = origin_xform * AnchorService.upright(pose as Transform3D)
+		_reticle_point = (pose as Transform3D).origin
+		_have_reticle_point = true
 		phase = Phase.READY
 	else:
 		phase = Phase.SEARCHING
@@ -570,7 +683,9 @@ func _update_overlay() -> void:
 		return
 	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
 	_overlay.global_transform = origin_xform
-	var points: PackedVector3Array = bridge.point_cloud(MAX_OVERLAY_POINTS)
+	# Yellow feature dots look like traced points; hide them while tracing.
+	_overlay_points.visible = flow.step != CalibrationFlow.Step.TRACING
+	var points: PackedVector3Array = bridge.point_cloud(MAX_OVERLAY_POINTS) if _overlay_points.visible else PackedVector3Array()
 	var multimesh: MultiMesh = _overlay_points.multimesh
 	multimesh.instance_count = points.size()
 	for i: int in points.size():
@@ -869,7 +984,9 @@ func cancel_trace() -> void:
 
 func clear_trace() -> void:
 	_trace_points = PackedVector3Array()
+	_trace_rays.clear()
 	_trace_touch = -1
+	_trace_jump_strikes = 0
 	flow.trace_points = 0
 	if _trace_node != null:
 		_trace_node.queue_free()
@@ -883,43 +1000,129 @@ func trace_point_count() -> int:
 
 
 ## Begin (or continue) the outline at a screen point. The first point must
-## land on a detected surface; it fixes the traced height.
+## land on a detected surface (or, if ARCore has no plane there yet, near the
+## surface under the reticle); it fixes the traced height. A new stroke near
+## the end of the last one continues it; far away it starts a new outline,
+## so two strokes are never joined by a straight line across the screen.
 func trace_begin(screen: Vector2) -> bool:
 	if flow.step != CalibrationFlow.Step.TRACING:
 		return false
-	if _trace_points.is_empty():
-		var hit: Dictionary = hit_at(screen)
-		if not bool(hit.get("hit", false)):
-			flow.trace_error = "Start your outline on the surface (where the teal area is)."
-			if hud != null:
-				hud.apply_flow(flow)
-			return false
-		_trace_height = (hit["pose"] as Transform3D).origin.y
-		flow.trace_error = ""
+	if not _trace_points.is_empty():
+		var p: Variant = _project_to_height(screen, _trace_height, TRACE_MAX_DISTANCE)
+		var last: Vector3 = _trace_points[_trace_points.size() - 1]
+		if p != null and _flat_distance(p as Vector3, last) <= TRACE_RESUME_RADIUS:
+			_trace_jump_strikes = 0
+			return trace_add(screen)
+		clear_trace()
+	var pose: Variant = hit_pose(hit_at(screen))
+	if pose != null:
+		_trace_height = (pose as Transform3D).origin.y
+	elif _have_reticle_point:
+		var guess: Variant = _project_to_height(screen, _reticle_point.y, TRACE_MAX_DISTANCE)
+		if guess == null or _flat_distance(guess as Vector3, _reticle_point) > TRACE_START_REACH:
+			return _trace_start_failed()
+		_trace_height = _reticle_point.y
+	else:
+		return _trace_start_failed()
+	flow.trace_error = ""
+	_trace_jump_strikes = 0
+	var first: Variant = _project_to_height(screen, _trace_height, TRACE_MAX_DISTANCE)
+	if first == null:
+		return _trace_start_failed()
+	_trace_last_supported = first as Vector3
 	return trace_add(screen)
 
 
+func _trace_start_failed() -> bool:
+	flow.trace_error = "Start your outline on the surface (where the teal area is)."
+	if hud != null:
+		hud.apply_flow(flow)
+	return false
+
+
 ## Add a stroke point: the finger's ray meets the traced surface's own height
-## (an infinite plane), so tracing past a real edge never drops to the floor.
-## Points over a clearly higher surface (an object on the area) are rejected.
+## (an infinite plane), so tracing just past a real edge never drops to the
+## floor. Rejected: points over a clearly higher surface (an object on the
+## area), rays that are too flat / long, single glitchy jumps, and points
+## whose ray misses every surface far from the last supported point.
 func trace_add(screen: Vector2) -> bool:
-	var point: Variant = _project_to_height(screen, _trace_height)
+	var ray: Variant = _origin_ray(screen)
+	if ray == null:
+		return false
+	var point: Variant = _project_to_height(screen, _trace_height, TRACE_MAX_DISTANCE)
 	if point == null:
 		return false
 	var p: Vector3 = point as Vector3
-	var hit: Dictionary = hit_at(screen)
-	if bool(hit.get("hit", false)) and (hit["pose"] as Transform3D).origin.y - _trace_height > TRACE_HEIGHT_TOLERANCE:
-		return false
+	var pose: Variant = hit_pose(hit_at(screen))
+	var hit_height: float = NAN
+	if pose != null:
+		hit_height = (pose as Transform3D).origin.y
+		if hit_height - _trace_height > TRACE_HEIGHT_TOLERANCE:
+			return false
 	if not _trace_points.is_empty():
-		if Vector2(p.x, p.z).distance_to(Vector2(_trace_points[0].x, _trace_points[0].z)) > TRACE_MAX_RADIUS:
+		if _flat_distance(p, _trace_points[0]) > TRACE_MAX_RADIUS:
 			return false
 		var last: Vector3 = _trace_points[_trace_points.size() - 1]
-		if Vector2(p.x, p.z).distance_to(Vector2(last.x, last.z)) < TRACE_MIN_SPACING:
+		var step: float = _flat_distance(p, last)
+		if step < TRACE_MIN_SPACING:
 			return false
+		if step > TRACE_MAX_JUMP:
+			_trace_jump_strikes += 1
+			if _trace_jump_strikes < TRACE_JUMP_STRIKES:
+				return false
+		if is_nan(hit_height) and _flat_distance(p, _trace_last_supported) > TRACE_MISS_ALLOWANCE:
+			return false
+	_trace_jump_strikes = 0
+	if not is_nan(hit_height):
+		_trace_last_supported = p
 	_trace_points.append(p)
+	_trace_rays.append({"origin": (ray as Array)[0], "dir": (ray as Array)[1], "hit": hit_height})
 	flow.trace_points = _trace_points.size()
 	_update_trace_preview()
 	return true
+
+
+## The traced surface's height, refined from every stroke point that hit it:
+## the median of hit heights within TRACE_HEIGHT_TOLERANCE of the start.
+func refined_trace_height() -> float:
+	var heights: Array[float] = []
+	for ray: Dictionary in _trace_rays:
+		var h: float = float(ray["hit"])
+		if not is_nan(h) and absf(h - _trace_height) <= TRACE_HEIGHT_TOLERANCE:
+			heights.append(h)
+	if heights.is_empty():
+		return _trace_height
+	heights.sort()
+	@warning_ignore("integer_division")
+	return heights[heights.size() / 2]
+
+
+## Stroke points re-projected onto `height` along their original rays.
+func _trace_points_at(height: float) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	for i: int in _trace_rays.size():
+		var ray: Dictionary = _trace_rays[i]
+		var hit: Variant = Plane(Vector3.UP, height).intersects_ray(ray["origin"] as Vector3, ray["dir"] as Vector3)
+		out.append(hit as Vector3 if hit != null else Vector3(_trace_points[i].x, height, _trace_points[i].z))
+	return out
+
+
+static func _flat_distance(a: Vector3, b: Vector3) -> float:
+	return Vector2(a.x, a.z).distance_to(Vector2(b.x, b.z))
+
+
+## A hit's pose, or null if the hit failed or carries no usable pose (never
+## a default / zero pose).
+static func hit_pose(hit: Dictionary) -> Variant:
+	if not bool(hit.get("hit", false)):
+		return null
+	var pose: Variant = hit.get("pose", null)
+	if not (pose is Transform3D):
+		return null
+	var origin: Vector3 = (pose as Transform3D).origin
+	if not origin.is_finite():
+		return null
+	return pose
 
 
 ## Finger lifted: close the outline if it came back near its start.
@@ -948,8 +1151,9 @@ func trace_end() -> bool:
 func finish_trace() -> bool:
 	if flow.step != CalibrationFlow.Step.TRACING:
 		return false
+	var height: float = refined_trace_height()
 	var flat := PackedVector2Array()
-	for p: Vector3 in _trace_points:
+	for p: Vector3 in _trace_points_at(height):
 		flat.append(Vector2(p.x, p.z))
 	var outline: PackedVector2Array = SurfaceRegion.clean_outline(flat)
 	if outline.is_empty():
@@ -957,7 +1161,7 @@ func finish_trace() -> bool:
 		return false
 	var world := PackedVector3Array()
 	for p: Vector2 in outline:
-		world.append(Vector3(p.x, _trace_height, p.y))
+		world.append(Vector3(p.x, height, p.y))
 	if not _place_on_outline(world):
 		return false
 	saved_area_world = world
@@ -998,7 +1202,11 @@ func _place_on_outline(world: PackedVector3Array) -> bool:
 		if forward.length() < 0.01:
 			forward = Vector3.FORWARD
 	var pose := Transform3D(Basis.looking_at(forward.normalized(), Vector3.UP), Vector3(c.x, height, c.y))
-	if not anchors.place_at_pose(pose):
+	if _anchor_on_surface_at(pose.origin):
+		anchor_kind = "plane"
+	elif anchors.place_at_pose(pose):
+		anchor_kind = "free"
+	else:
 		_trace_failed("AR tracking is not steady yet. Hold still a moment and trace again.")
 		return false
 	var to_anchor: Transform3D = anchors.pose.affine_inverse()
@@ -1024,9 +1232,43 @@ func _place_on_outline(world: PackedVector3Array) -> bool:
 	return true
 
 
+## Anchor on the detected surface under `origin_point` (XROrigin3D space)
+## if one is right there (same height, a few cm), so ARCore keeps the anchor
+## glued to that surface as it refines it. False if none is.
+func _anchor_on_surface_at(origin_point: Vector3) -> bool:
+	if xr_camera == null:
+		return false
+	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
+	var world: Vector3 = origin_xform * origin_point
+	if xr_camera.is_position_behind(world):
+		return false
+	var screen: Vector2 = xr_camera.unproject_position(world)
+	var size: Vector2 = get_viewport().get_visible_rect().size
+	if not Rect2(Vector2.ZERO, size).has_point(screen):
+		return false
+	var pose: Variant = hit_pose(hit_at(screen))
+	if pose == null:
+		return false
+	var at: Vector3 = (pose as Transform3D).origin
+	if absf(at.y - origin_point.y) > PLANE_HEIGHT_TOLERANCE or _flat_distance(at, origin_point) > 0.05:
+		return false
+	return anchors.place_at_screen(Vector2(screen.x / maxf(1.0, size.x), screen.y / maxf(1.0, size.y)))
+
+
+## The finger's ray in XROrigin3D space: [origin, direction], or null.
+func _origin_ray(screen: Vector2) -> Variant:
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera == null:
+		return null
+	var to_origin: Transform3D = (xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY).affine_inverse()
+	var origin: Vector3 = camera.project_ray_origin(screen)
+	var direction: Vector3 = camera.project_ray_normal(screen)
+	return [to_origin * origin, (to_origin.basis * direction).normalized()]
+
+
 ## Ray from a screen point to the horizontal plane at `height` (XROrigin3D
 ## space); null for flat or distant rays.
-func _project_to_height(screen: Vector2, height: float) -> Variant:
+func _project_to_height(screen: Vector2, height: float, max_distance: float = MAX_RAY_DISTANCE) -> Variant:
 	var camera: Camera3D = get_viewport().get_camera_3d()
 	if camera == null:
 		return null
@@ -1038,7 +1280,7 @@ func _project_to_height(screen: Vector2, height: float) -> Variant:
 		return null
 	var plane := Plane(up, origin_xform * Vector3(0.0, height, 0.0))
 	var hit: Variant = plane.intersects_ray(origin, direction)
-	if hit == null or origin.distance_to(hit as Vector3) > MAX_RAY_DISTANCE:
+	if hit == null or origin.distance_to(hit as Vector3) > max_distance:
 		return null
 	return origin_xform.affine_inverse() * (hit as Vector3)
 
@@ -1053,7 +1295,8 @@ func _trace_input(event: InputEvent) -> void:
 				_trace_touch = touch.index
 		elif not touch.pressed and touch.index == _trace_touch:
 			_trace_touch = -1
-			trace_end()
+			if not touch.canceled:
+				trace_end()
 	elif event is InputEventScreenDrag:
 		var drag: InputEventScreenDrag = event
 		if drag.index == _trace_touch:
@@ -1078,16 +1321,120 @@ func _update_trace_preview() -> void:
 	var flat := PackedVector2Array()
 	for p: Vector3 in _trace_points:
 		flat.append(Vector2(p.x, p.z))
-	_trace_node.mesh = SurfaceRegion.outline_mesh(flat, false, 0.01, _trace_height + 0.003)
+	_trace_node.mesh = SurfaceRegion.outline_mesh(flat, false, 0.012, _trace_height + 0.003)
 
 
 func debug_suffix() -> String:
 	var parts: PackedStringArray = []
+	var drift: String = drift_debug()
+	if not drift.is_empty():
+		parts.append(drift)
 	if region != null:
 		parts.append("area %s %.2fm²" % ["traced" if region.source == SurfaceRegion.Source.TRACED else "plane", region.area()])
 	if not extra_debug.is_empty():
 		parts.append(extra_debug)
 	return "" if parts.is_empty() else " · " + " · ".join(parts)
+
+
+# --- Drift diagnostics / tracking loss --------------------------------------------
+
+func _reset_drift() -> void:
+	drift_last_mm = 0.0
+	drift_max_mm = 0.0
+	drift_since_lock_mm = 0.0
+	_drift_have_prev = false
+	_drift_window = 0.0
+	_lost_seconds = 0.0
+
+
+## Per frame: how far the anchor pose moved since the last frame, the most
+## in the last 3 s, and since Lock (all in mm, world space).
+func _track_drift(delta: float) -> void:
+	var at: Vector3 = anchors.pose.origin
+	if _drift_have_prev:
+		drift_last_mm = at.distance_to(_drift_prev) * 1000.0
+		_drift_window += delta
+		if _drift_window > 3.0:
+			_drift_window = 0.0
+			drift_max_mm = 0.0
+		drift_max_mm = maxf(drift_max_mm, drift_last_mm)
+	_drift_prev = at
+	_drift_have_prev = true
+	if _has_lock_origin:
+		drift_since_lock_mm = at.distance_to(_lock_origin) * 1000.0
+
+
+## Camera tracking lost: ARCore freezes the camera pose, so a visible board
+## would stick to the screen and slide over the real table. Hide it after
+## LOST_HIDE_SECONDS and say why; show it again when tracking is back.
+func _update_tracking_loss(delta: float) -> void:
+	var state: int = int(tracking_info.get("camera_state", 0))
+	if state != CalibrationFlow.CAMERA_TRACKING:
+		_lost_seconds += delta
+		if _lost_seconds >= LOST_HIDE_SECONDS and not board_hidden_by_loss:
+			board_hidden_by_loss = true
+			tracking_losses += 1
+			world_anchor.visible = false
+			if hud != null:
+				hud.set_status("Tracking lost. Point the phone back at the board and hold still.")
+	else:
+		_lost_seconds = 0.0
+		if board_hidden_by_loss:
+			board_hidden_by_loss = false
+			world_anchor.visible = true
+			if hud != null:
+				hud.apply_flow(flow)
+
+
+## Board height minus the height of the detected surface under the board's
+## centre (m), NAN if no surface is under it. Near 0 means the board sits on
+## the real surface; a few cm means it floats above / sinks below it (which
+## looks like "drifting" as the camera moves).
+func measure_surface_gap() -> float:
+	if bridge == null or pivot == null or not pivot.is_inside_tree():
+		return NAN
+	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
+	var board: Vector3 = origin_xform.affine_inverse() * pivot.global_position
+	var best: float = NAN
+	for entry: Variant in bridge.horizontal_planes():
+		var plane: Dictionary = entry as Dictionary
+		var pose: Transform3D = plane.get("pose", Transform3D.IDENTITY) as Transform3D
+		var polygon: PackedVector2Array = plane.get("polygon", PackedVector2Array()) as PackedVector2Array
+		if polygon.size() < 3:
+			continue
+		var local: Vector3 = pose.affine_inverse() * board
+		if not Geometry2D.is_point_in_polygon(Vector2(local.x, local.z), polygon):
+			continue
+		var gap: float = board.y - pose.origin.y
+		if is_nan(best) or absf(gap) < absf(best):
+			best = gap
+	return best
+
+
+## "anc T plane · d 0.2/3.1mm · lock 4mm · board 0.12,0.12,-0.70 · surf +0.3cm"
+## anchor tracking (T tracking, P paused, S stopped) and kind, anchor motion
+## this frame / max in 3 s, anchor motion since Lock, board centre (world m),
+## board height over the detected surface under it.
+func drift_debug() -> String:
+	if not is_ar() or phase != Phase.PLACED or pivot == null or not pivot.is_inside_tree():
+		return ""
+	var state: String = "?"
+	match anchors.tracking:
+		AnchorBackend.Tracking.TRACKING: state = "T"
+		AnchorBackend.Tracking.PAUSED: state = "P"
+		AnchorBackend.Tracking.STOPPED: state = "S"
+	var board: Vector3 = pivot.global_position
+	var parts: PackedStringArray = [
+		"anc %s %s" % [state, anchor_kind],
+		"d %.1f/%.1fmm" % [drift_last_mm, drift_max_mm],
+	]
+	if _has_lock_origin:
+		parts.append("lock %.0fmm" % drift_since_lock_mm)
+	parts.append("board %.2f,%.2f,%.2f" % [board.x, board.y, board.z])
+	parts.append("surf %s" % ("none" if is_nan(surface_gap) else "%+.1fcm" % (surface_gap * 100.0)))
+	if tracking_losses > 0:
+		parts.append("lost %d" % tracking_losses)
+	return " ".join(parts)
 
 
 func _on_anchor_tracking_changed(state: int) -> void:

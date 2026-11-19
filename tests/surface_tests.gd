@@ -55,11 +55,11 @@ func _test_region_geometry() -> void:
 		slid != null and absf((slid as Vector2).x - (0.6 - 0.15 - SurfaceRegion.EDGE_MARGIN)) < 0.005
 	))
 	check("region: a board wider than the area has no fitting centre", strip.clamp_center(Vector2.ZERO, Vector2(0.3, 0.3), 0.0) == null)
-	var fit: Dictionary = strip.fit_board(Vector2(0.3, 0.3), BoardPlacement.MIN_SCALE)
+	var fit: Dictionary = strip.fit_board(Vector2(0.3, 0.3), BoardPlacement.MIN_SCALE, 2.0)
 	check("region: auto-fit sizes a square board to the strip's depth", (
 		not fit.is_empty() and absf(float(fit["scale"]) - (0.4 - 2.0 * SurfaceRegion.EDGE_MARGIN) / 0.3) < 0.02
 	))
-	var long_fit: Dictionary = strip.fit_board(Vector2(0.6, 0.2), BoardPlacement.MIN_SCALE)
+	var long_fit: Dictionary = strip.fit_board(Vector2(0.6, 0.2), BoardPlacement.MIN_SCALE, 2.0)
 	var footprint: PackedVector2Array = SurfaceRegion.footprint(long_fit["center"] as Vector2, Vector2(0.3, 0.1) * float(long_fit["scale"]), float(long_fit["yaw"]))
 	var span_x: float = absf(footprint[1].x - footprint[0].x) + absf(footprint[2].x - footprint[1].x)
 	check("region: auto-fit turns a long board along the long side", span_x > 0.9)
@@ -227,9 +227,14 @@ func _test_tracing() -> void:
 	))
 	var fake: FakeARBridge = ar.bridge as FakeARBridge
 	fake.hit_callback = func(_n: Vector2) -> Dictionary: return {"hit": false}
-	check("trace: a stroke must start on a detected surface", (
-		not ar.trace_begin(get_viewport().get_visible_rect().size * 0.5) and ar.flow.message().contains("Start your outline")
+	var far_screen: Vector2 = _screen(Vector3(0.0, PLY_HEIGHT, -1.9))
+	check("trace: a stroke must start on a detected surface (or next to the reticle's)", (
+		not ar.trace_begin(far_screen) and ar.flow.message().contains("Start your outline") and ar.trace_point_count() == 0
 	))
+	check("trace: a start where ARCore has no plane yet, next to the reticle, uses the reticle surface's height", (
+		ar.trace_begin(_screen(Vector3(0.05, PLY_HEIGHT, -0.62))) and absf(ar._trace_height - PLY_HEIGHT) < 0.001
+	))
+	ar.clear_trace()
 	fake.hit_callback = _model_hit
 	var tiny := Rect2(-0.02, -0.72, 0.03, 0.03)
 	_trace_rect(ar, tiny, PLY_HEIGHT, 3)
@@ -253,7 +258,7 @@ func _test_tracing() -> void:
 	check("trace: the board is auto-fitted inside the real plywood (not the over-extended plane)", (
 		_inside(_corners_world(host.game), ply_real, PLY_HEIGHT)
 	))
-	check("trace: auto-fit grows the board to the plank's depth", ar.placement.scale > 1.05 and ar.placement.scale < 1.3)
+	check("trace: auto-fit keeps the game at its own size when it fits (never huge)", is_equal_approx(ar.placement.scale, 1.0))
 	check("trace: the outline is remembered for this session", ARSession.saved_area_world.size() >= 4 and ar.flow.has_saved_area)
 	var centre: Vector2 = _screen(host.game.global_position)
 	var off_edge: Vector2 = _screen(host.game.to_global(Vector3(0.0, 0.0, 0.6)))
@@ -301,7 +306,7 @@ func _test_touch_taps_fallback() -> void:
 	var host: GameHost = await make_host(&"tic_tac_toe")
 	var game: TicTacToeGame = host.game as TicTacToeGame
 	var camera: Camera3D = host.active_camera()
-	var cell := func(index: int) -> Vector2: return camera.unproject_position(game.to_global(TicTacToeGame.cell_center(index)))
+	var cell := func(index: int) -> Vector2: return camera.unproject_position(game.to_global(TicTacToeGame.cell_top(index)))
 	_tap(cell.call(4) as Vector2)
 	check("touch: a screen-touch tap on a tile places a mark", game.rules.cells[4] == TicTacToeRules.Mark.X)
 	check("touch: the tap shows a marker where it landed", host._tap_marker != null and host._tap_marker.visible)
@@ -322,7 +327,7 @@ func _test_touch_taps_fallback() -> void:
 	check("touch: touching the Games button is not a board tap", (
 		host.is_over_platform_ui(back) and game.rules.cells.count(TicTacToeRules.Mark.NONE) == marks
 	))
-	var near_edge: Vector3 = TicTacToeGame.cell_center(6) + Vector3(-0.055, 0.0, 0.0)
+	var near_edge: Vector3 = TicTacToeGame.cell_top(6) + Vector3(-0.055, 0.0, 0.0)
 	host.route_gesture({"kind": &"tap", "position": camera.unproject_position(game.to_global(near_edge))})
 	check("touch: a tap just past the grid edge still picks the edge tile", game.rules.cells[6] != TicTacToeRules.Mark.NONE)
 	check("touch: tap slop is at least the default on any screen", host.tap_slop_for_screen() >= GestureTracker.TAP_SLOP_PX)
@@ -342,9 +347,9 @@ func _test_touch_taps_ar() -> void:
 	ar.set_locked(true)
 	await frames(1)
 	var game: TicTacToeGame = host.game as TicTacToeGame
-	_tap(_screen(game.to_global(TicTacToeGame.cell_center(4))))
+	_tap(_screen(game.to_global(TicTacToeGame.cell_top(4))))
 	check("touch AR: after locking, a screen tap through the AR camera places a mark", game.rules.cells[4] == TicTacToeRules.Mark.X)
-	_tap(_screen(game.to_global(TicTacToeGame.cell_center(1))), 0, Vector2(-12.0, 10.0))
+	_tap(_screen(game.to_global(TicTacToeGame.cell_top(1))), 0, Vector2(-12.0, 10.0))
 	check("touch AR: wobbly phone taps work on the locked board", game.rules.cells[1] == TicTacToeRules.Mark.O)
 	check("touch AR: the debug line counts taps that hit the board", ar.debug_suffix().contains("taps 2/2"))
 	await free_host(host)

@@ -12,7 +12,7 @@ enum Source { NONE, PLANE, TRACED }
 ## Keep the board this far inside the edge (metres).
 const EDGE_MARGIN: float = 0.01
 ## Largest auto-fit size, as a multiple of the game's own board size.
-const MAX_FIT_SCALE: float = 2.0
+const MAX_FIT_SCALE: float = 1.0
 const MAX_POINTS: int = 48
 const SEARCH_GRID: int = 9
 
