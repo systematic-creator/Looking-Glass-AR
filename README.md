@@ -123,16 +123,50 @@ space** and reacts to lifecycle hooks and board-space taps.
    right edge sets the box height (saved per game, kept through pause /
    resume, Unlock and Re-place).
 
-**Staying put once locked.** Lock re-anchors the ARCore anchor exactly under
-the board's final spot (the drag offset is baked in; the board does not
-move), so the anchor and the board coincide. After that the board follows only
-that anchor's pose: never the camera, never plane re-estimation (the play
-area is not re-clamped while locked), and the XR origin is never moved. If
-the anchor stops tracking, the board holds its last pose; when tracking
-returns, small ARCore corrections (< 3 cm) apply at once and bigger ones ease
-in over ~0.1 s. If the *camera* loses tracking for over 0.5 s, the board is
-hidden ("Tracking lost") instead of sliding along with the frozen camera, and
-comes back when tracking does.
+**Staying put once locked.** Lock re-anchors with a **plane-attached**
+ARCore anchor (a hit test on the detected surface) right under the board's
+centre (or a point of its footprint, if the centre is off screen), with the
+board's drag, turn and scale baked into the placement, so the board does not
+move and sits exactly at the plane's height. A plane-attached anchor moves
+with the table when ARCore refines or relocalizes its map; a free anchor does
+not, which is what made the board leave the table in the field (see below).
+Only when no plane is hit under the board does Lock fall back to a free
+anchor ("lock: no plane under board"); a locked board on a free anchor is
+moved onto a plane anchor as soon as a plane is hit under it. After that the
+board follows only that anchor's pose: never the camera, never plane
+re-estimation (the play area is not re-clamped while locked), and the XR
+origin is never moved. If the anchor stops tracking, the board holds its last
+pose; when tracking returns, small ARCore corrections (< 3 cm) apply at once
+and bigger ones ease in over ~0.1 s. If the *camera* loses tracking for over
+0.5 s, the board is hidden ("Tracking lost") instead of sliding along with
+the frozen camera, and comes back when tracking does.
+
+**Anchor guard.** An anchor pose that jumps more than 10 cm (or turns more
+than 15 degrees) at once is not shown. The board stays at its last trusted
+pose ("Re-finding the table…") until the new pose has held still for 0.5 s,
+then the detected planes decide:
+
+- the table is still under the board's old spot at its height: the anchor
+  alone jumped (ARCore relocalizing it to a wrong spot). The jump is
+  rejected and the board is re-anchored on the plane at its old spot;
+- only the new spot is on a plane: the whole world moved (planes too), so the
+  jump is accepted and eased in;
+- neither, but a plane is under the new spot: accepted and snapped onto that
+  plane;
+- no planes to judge by: accepted.
+
+A jump that undoes itself is never shown. **Height guard:** a board locked
+on a detected plane that then floats or sinks 3-25 cm against that plane for
+1.5 s is re-anchored onto it (a board deliberately standing above the plane
+at Lock, e.g. on an object ARCore did not map, is left alone).
+
+**The field case (lg-test-d206a6e).** The reading was "anc T free d
+0.0/646.6mm lock 647mm surf -12.9cm lost 1". Lock had swapped the reticle's
+plane anchor for a free one, because the board was dragged off it (Fit edges
+often does this). After a tracking loss, ARCore put that free anchor back
+65 cm away and 13 cm low, and the board eased in after it. The board then
+looked right only from the placement angle and went under the table from the
+other side. `anchor_tests` replays those numbers.
 
 If ARCore is not tracking yet, *Place in front of me* holds the board in front
 of the camera (so it never slides away) and turns it into a world anchor
@@ -145,16 +179,26 @@ draws a magenta dot where the finger touched and a cyan ring where the
 board hit projects back to the screen (they should coincide).
 The debug line also shows, once the board is placed:
 
-- `anc T plane`: anchor tracking (T tracking, P paused, S stopped) and how it
-  was made (`plane` = attached to a detected surface, `free` = world pose,
-  `held` = camera-held, not anchored yet);
+- `anc T plane (lock: plane under board)`: anchor tracking (T tracking,
+  P paused, S stopped), how it was made (`plane` = attached to a detected
+  surface, `free` = world pose, `held` = camera-held, not anchored yet) and
+  why (`reticle`, `outline on plane`, `lock: plane under board`, `lock: no
+  plane under board`, `jump rejected, plane under board`, `height fixed to
+  plane (-12.9cm)`, `upgraded free to plane`, ...);
 - `d 0.2/3.1mm`: how far the anchor pose moved this frame / at most in the
-  last 3 s; `lock 4mm`: total anchor movement since Lock (should stay near 0);
-- `board x,y,z`: the board centre in world metres;
+  last 3 s; `lock 4mm`: how far the *board* has moved since Lock (should stay
+  near 0; re-anchoring does not count);
+- `anchor x,y,z` / `board x,y,z`: the raw anchor pose and the shown board
+  centre in world metres (they coincide after Lock; they differ while a jump
+  is held);
 - `surf +0.3cm`: board height above the detected surface under its centre
-  (a few cm off means the board floats over / sinks into the real surface,
-  which looks like drifting as you walk around); `lost N`: camera tracking
-  losses;
+  (once locked, against the plane it was locked on), `pl#0 h0.12`: that
+  plane (index in ARCore's plane list this frame, and its height). A few cm
+  off means the board floats over / sinks into the real surface, which looks
+  like drifting as you walk around;
+- `jump held 628mm`: an anchor jump being held back; `fix rej1 acc0 h0 up0`:
+  jumps rejected / accepted, height fixes, free-to-plane upgrades; `lost N`:
+  camera tracking losses;
 - `area traced 0.42m²` / `area plane ...` / `area fitted ...`: the play area;
 - `taps N/M · tap px 812,433 vp 1560x720 win 2340x1080 cs 1.50 xr-ray hit
   0.031,-0.046 err 0.2px cell 4`: taps that hit the board / taps seen, then
@@ -251,7 +295,19 @@ adjusting) to keep it on dimly. Tic-Tac-Toe uses 0.35.
 
 **The sample games:** Tic-Tac-Toe declares a small airspace (20 cm, 12-30 cm)
 and its pieces drop from inside the box top (a lower box means a shorter
-drop). Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
+drop). It plays on a **3x3, 4x4 or 5x5** board, needing **3, 4 and 4 in a
+row** (`TicTacToeRules.win_length_for`; three in a row on the bigger boards is
+a quick first-player win, five on 5x5 nearly always a draw). The size is
+picked on a hologram **options strip** lying on the table at the player's
+edge of the board (3×3 · 4×4 · 5×5 · Reset score; it moves to whichever side
+you stand on). Sizes change between rounds only: before the first move or
+after a round ends. The grid always fills 27 cm of the 30 cm board, so the
+cells, pieces, ripples and win line shrink with the size (9 / 6.75 / 5.4 cm
+cells); the board footprint, play box and drop heights stay the same. A
+hologram **scoreboard** (X wins / O wins / draws) floats at the far edge
+beside the turn token. It counts every finished round for the whole app
+session (across rounds, sizes and leaving / re-opening the game) until
+**Reset score** is tapped. Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
 50-60 cm) and keeps its label under the top.
 
 ### Hologram look (`platform/visual/`)
@@ -333,7 +389,13 @@ hologram board), `touch_tests` (the phone touch path: an ARCore-style XR
 projection, a 2340x1080 window with content scale, touches as window pixels,
 every cell from several poses; tap slop, tap probe, in-game debug access),
 `fit_tests` (Fit edges: handle maths, the stage, touch drags onto the real
-edge, Reset / Done, board clamping, glow clipping, persistence), `box_tests` (the play box: maths and caps, manifest limits,
+edge, Reset / Done, board clamping, glow clipping, persistence),
+`anchor_tests` (plane-attached re-anchoring at Lock with drag / turn /
+scale, the free fallback and upgrade, the field relocalization jump, real
+world shifts, self-undoing jumps, the height guard, the debug readout),
+`ttt_tests` (tic-tac-toe 3x3 / 4x4 / 5x5 rules and win lengths, the options
+strip, scoreboard and reset, session persistence, taps and drops on every
+cell at every size, AR taps on 5x5), `box_tests` (the play box: maths and caps, manifest limits,
 the game API and hooks, the Airspace slider, persistence across pause /
 resume / re-place / sessions, outline levels, tap rays, the games' boxes).
 Leaked-RID messages at exit are harmless.

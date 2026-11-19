@@ -19,6 +19,10 @@ var anchor_state: int = 0
 ## Applied to every reported anchor pose (simulates ARCore correcting the
 ## world, or garbage poses while an anchor is not tracking).
 var pose_shift: Transform3D = Transform3D.IDENTITY
+## Per-anchor extra shift (anchor id -> Transform3D), applied after
+## pose_shift: simulates ARCore relocalizing ONE anchor to a wrong spot
+## while the planes (and newly made anchors) stay put.
+var anchor_shift: Dictionary = {}
 ## How anchors were made, in order: "screen" or "pose".
 var anchor_calls: Array[String] = []
 var _poses: Dictionary = {}
@@ -104,7 +108,13 @@ func create_anchor(pose: Transform3D) -> int:
 
 
 func get_anchor_pose(anchor_id: int) -> Transform3D:
-	return pose_shift * (_poses.get(anchor_id, Transform3D.IDENTITY) as Transform3D)
+	var extra: Transform3D = anchor_shift.get(anchor_id, Transform3D.IDENTITY) as Transform3D
+	return extra * pose_shift * (_poses.get(anchor_id, Transform3D.IDENTITY) as Transform3D)
+
+
+## Id of the most recently made anchor (-1 if none).
+func last_anchor_id() -> int:
+	return _next_id - 1 if anchors_made > 0 else -1
 
 
 func get_anchor_tracking_state(anchor_id: int) -> int:

@@ -73,6 +73,27 @@ const ANCHOR_SMOOTH_TIME: float = 0.12
 ## Camera tracking lost this long (s) hides the board instead of letting it
 ## slide with the frozen camera.
 const LOST_HIDE_SECONDS: float = 0.5
+## Anchor guard (see _update_jump_guard): an anchor pose that jumps more
+## than this (m) or turns more than JUMP_SUSPECT_TURN (rad) in one step is
+## not shown until it has held still for JUMP_CONFIRM_SECONDS and the
+## detected planes agree with it.
+const JUMP_SUSPECT: float = 0.10
+const JUMP_SUSPECT_TURN: float = 0.26
+const JUMP_CONFIRM_SECONDS: float = 0.5
+## While a jump is held, a new pose this far from the held one restarts the wait.
+const JUMP_STEADY: float = 0.03
+## A locked board that sat on a detected plane at Lock but is now this far
+## above / below the plane under it (more than HEIGHT_FIX_MIN, at most
+## HEIGHT_FIX_MAX) for HEIGHT_FIX_SECONDS is re-anchored onto the plane.
+const HEIGHT_FIX_MIN: float = 0.03
+const HEIGHT_FIX_MAX: float = 0.25
+const HEIGHT_FIX_SECONDS: float = 1.5
+## A locked board on a free anchor tries to re-anchor onto the plane under
+## it this often (s).
+const PLANE_UPGRADE_INTERVAL: float = 1.0
+## At Lock the plane anchor must land this close (m, horizontally) to the
+## point under the board it was asked for.
+const LOCK_ANCHOR_REACH: float = 0.02
 ## Drag rays flatter than this (|dot(ray, up)|) are ignored: near the horizon
 ## a finger's pixel moves the board metres.
 const MIN_RAY_ELEVATION: float = 0.12
@@ -162,6 +183,27 @@ var _have_reticle_point: bool = false
 ## How the current anchor was made: "plane" (attached to a detected surface),
 ## "free" (a world pose), "held" (camera-relative, not anchored yet).
 var anchor_kind: String = ""
+## Why the current anchor was made (shown in the debug line).
+var anchor_reason: String = ""
+## Anchor guard state and counters (see _update_jump_guard / drift_debug).
+var jump_holding: bool = false
+var jumps_rejected: int = 0
+var jumps_accepted: int = 0
+var height_fixes: int = 0
+var plane_upgrades: int = 0
+## The last anchor pose the guard trusted (XROrigin3D space).
+var _trusted_pose: Transform3D = Transform3D.IDENTITY
+var _jump_target: Transform3D = Transform3D.IDENTITY
+var _jump_seconds: float = 0.0
+var _height_bad_seconds: float = 0.0
+var _upgrade_elapsed: float = 0.0
+## Whether the board sat on a detected plane when it was locked, and that
+## plane's height (XROrigin3D space; follows accepted world shifts / fixes).
+var locked_on_plane: bool = false
+var lock_plane_height: float = NAN
+## Index (in this frame's plane list) and height of the plane under the board.
+var surface_plane: int = -1
+var surface_plane_height: float = NAN
 ## The anchor pose actually shown (eases toward anchors.pose on big jumps).
 var shown_pose: Transform3D = Transform3D.IDENTITY
 ## Drift diagnostics (see drift_debug()).
@@ -414,6 +456,7 @@ func place_at_reticle() -> bool:
 	if not anchors.place_at_screen(Vector2(0.5, 0.5)):
 		return false
 	anchor_kind = "plane"
+	anchor_reason = "reticle"
 	front_follow = false
 	flow.anchor_pending = false
 	placement.offset = Vector3.ZERO
@@ -434,12 +477,14 @@ func place_in_front() -> bool:
 	var pose: Transform3D = _front_local_pose()
 	if flow.tracking_stable() and anchors.place_at_pose(pose):
 		anchor_kind = "free"
+		anchor_reason = "in front, no surface"
 		front_follow = false
 		flow.anchor_pending = false
 	else:
 		anchors.clear()
 		anchors.pose = AnchorService.upright(pose)
 		anchor_kind = "held"
+		anchor_reason = "waiting for tracking"
 		front_follow = true
 		flow.anchor_pending = true
 	_clear_region()
@@ -460,6 +505,7 @@ func _update_front_follow() -> void:
 	anchors.pose = AnchorService.upright(_front_local_pose())
 	if flow.tracking_stable() and anchors.place_at_pose(anchors.pose):
 		anchor_kind = "free"
+		anchor_reason = "in front, no surface"
 		front_follow = false
 		flow.anchor_pending = false
 		if hud != null:
@@ -512,6 +558,7 @@ func begin_replace() -> void:
 	flow.has_saved_area = saved_area_world.size() >= 3
 	anchors.clear()
 	anchor_kind = ""
+	anchor_reason = ""
 	phase = Phase.SEARCHING
 	placement.locked = false
 	flow.restart()
@@ -542,9 +589,13 @@ func set_locked(locked: bool) -> void:
 		_commit_fit()
 	if locked and not placement.locked:
 		rebase_anchor()
-		_lock_origin = anchors.pose.origin
+		_lock_origin = board_origin_point()
 		_has_lock_origin = true
 		drift_since_lock_mm = 0.0
+		var under: Dictionary = plane_under(board_origin_point())
+		locked_on_plane = not under.is_empty() and absf(float(under["gap"])) <= PLANE_HEIGHT_TOLERANCE
+		lock_plane_height = float(under["height"]) if locked_on_plane else NAN
+		_height_bad_seconds = 0.0
 	placement.locked = locked
 	placement.save(placement_path)
 	gestures.reset()
@@ -591,24 +642,80 @@ func _sync_play() -> void:
 		board_lock_changed.emit(locked)
 
 
-## Lock-time re-anchoring: move the anchor to the board's final spot (the
-## player's drag offset baked in), so the ARCore anchor sits exactly under
-## the board and small anchor rotations cannot swing it around. The board
-## does not move. Keeps the old anchor if ARCore cannot make a new one.
+## Lock-time re-anchoring: put a PLANE-ATTACHED anchor (an ARCore hit
+## test on the detected surface) right under the board's centre, so the
+## anchor moves with the table when ARCore refines or relocalizes, the board
+## sits at the plane's height, and small anchor rotations cannot swing it
+## around. Falls back to a free anchor at the board only when no plane is
+## under it (and the board was dragged off its old anchor); otherwise keeps
+## the old anchor. The board does not move (beyond snapping onto the plane).
 func rebase_anchor() -> bool:
-	if front_follow or not anchors.has_anchor() or placement.offset.length() < 0.01:
+	if front_follow or not anchors.has_anchor():
 		return false
-	var offset: Vector3 = placement.offset
-	var target: Transform3D = anchors.pose * Transform3D(Basis(), offset)
-	if not anchors.place_at_pose(target):
+	var dragged: bool = placement.offset.length() >= 0.01
+	if not dragged and anchor_kind == "plane":
+		anchor_reason = "lock: kept %s anchor" % (anchor_reason if not anchor_reason.is_empty() else "plane")
 		return false
-	anchor_kind = "free"
-	placement.offset = Vector3.ZERO
+	if reanchor_board(anchors.pose, NAN, "lock: plane under board", dragged, "lock: no plane under board"):
+		return true
+	if anchor_kind != "plane":
+		anchor_reason = "lock: no plane under board, kept"
+	return false
+
+
+## Board centre (pivot origin) in XROrigin3D space for an anchor pose
+## (default: the current anchor pose).
+func board_origin_point(at_anchor: Variant = null) -> Vector3:
+	var pose: Transform3D = anchors.pose if at_anchor == null else at_anchor as Transform3D
+	return (pose * placement.pivot_transform()).origin
+
+
+## Re-anchor so the board keeps its pose under `at_anchor` (an anchor pose,
+## XROrigin3D space), optionally moved to height `target_y`: first a plane
+## anchor via a hit test under the board's centre (or a point of its
+## footprint, when the centre is off screen), else (if `allow_free`) a free
+## anchor at the board. Re-expresses the placement and the play area in the
+## new anchor's frame. Returns false (old anchor kept) if nothing worked.
+func reanchor_board(at_anchor: Transform3D, target_y: float, reason: String, allow_free: bool = true, free_reason: String = "") -> bool:
+	var board_xf: Transform3D = at_anchor * placement.pivot_transform()
+	if not is_nan(target_y):
+		board_xf.origin.y = target_y
+	var centre: Vector3 = board_xf.origin
+	var made: String = ""
+	var probes: Array[Vector3] = [centre]
+	for f: Vector2 in [Vector2(0.25, 0.25), Vector2(-0.25, 0.25), Vector2(0.25, -0.25), Vector2(-0.25, -0.25)]:
+		var p: Vector3 = board_xf * Vector3(f.x * board_size.x, 0.0, f.y * board_size.y)
+		probes.append(Vector3(p.x, centre.y, p.z))
+	if xr_camera != null and xr_camera.is_inside_tree():
+		for probe: Vector3 in probes:
+			if _anchor_on_surface_at(probe, LOCK_ANCHOR_REACH):
+				made = "plane"
+				break
+	if made.is_empty():
+		if not allow_free or not anchors.place_at_pose(Transform3D(at_anchor.basis, centre)):
+			return false
+		made = "free"
+	var old_anchor: Transform3D = at_anchor
+	anchor_kind = made
+	anchor_reason = reason if made == "plane" else (free_reason if not free_reason.is_empty() else reason + " (free)")
+	# The placement that keeps the board where it was, under the new anchor.
+	var rel: Transform3D = anchors.pose.affine_inverse() * Transform3D(board_xf.basis, centre)
+	var m: float = maxf(placement.magnify, 0.0001)
+	var offset := Vector3(rel.origin.x, 0.0, rel.origin.z) / m
+	if offset.length() < 0.0005:
+		offset = Vector3.ZERO
+	var x_axis: Vector3 = rel.basis.x
+	var new_yaw: float = atan2(-x_axis.z, x_axis.x)
+	placement.offset = offset
+	placement.yaw = new_yaw
 	if region != null:
+		var to_new: Transform3D = anchors.pose.affine_inverse() * old_anchor
 		var moved := PackedVector2Array()
 		for p: Vector2 in region.polygon:
-			moved.append(p - Vector2(offset.x, offset.z))
+			var q: Vector3 = to_new * Vector3(p.x, 0.0, p.y)
+			moved.append(Vector2(q.x, q.z))
 		_set_region(SurfaceRegion.make(moved, region.source))
+	_drift_have_prev = false
 	_apply_transforms()
 	return true
 
@@ -627,8 +734,10 @@ func apply_anchor_pose(anchor_pose: Transform3D) -> void:
 func _apply_transforms(delta: float = -1.0) -> void:
 	if delta < 0.0:
 		shown_pose = anchors.pose
+		_trusted_pose = anchors.pose
+		jump_holding = false
 	else:
-		shown_pose = ease_pose(shown_pose, anchors.pose, delta)
+		shown_pose = ease_pose(shown_pose, _trusted_pose if jump_holding else anchors.pose, delta)
 	apply_anchor_pose(shown_pose)
 	if pivot != null:
 		pivot.transform = placement.pivot_transform()
@@ -689,11 +798,14 @@ func _process(delta: float) -> void:
 		_update_front_follow()
 	else:
 		anchors.poll()
+		_update_jump_guard(delta)
 		_apply_transforms(delta)
 	_track_drift(delta)
 	_update_tracking_loss(delta)
 	if refresh:
 		surface_gap = measure_surface_gap()
+	if not front_follow:
+		_update_height_guard(delta)
 	if flow.step == CalibrationFlow.Step.FITTING and hud != null:
 		hud.fit_handles.set_handles(fit_handle_screens(), _active_handle_slot())
 	if region != null and region.source == SurfaceRegion.Source.PLANE and not placement.locked and flow.step != CalibrationFlow.Step.FITTING:
@@ -1431,8 +1543,10 @@ func _place_on_outline(world: PackedVector3Array) -> bool:
 	var pose := Transform3D(Basis.looking_at(forward.normalized(), Vector3.UP), Vector3(c.x, height, c.y))
 	if _anchor_on_surface_at(pose.origin):
 		anchor_kind = "plane"
+		anchor_reason = "outline on plane"
 	elif anchors.place_at_pose(pose):
 		anchor_kind = "free"
+		anchor_reason = "outline, no plane hit"
 	else:
 		_trace_failed("AR tracking is not steady yet. Hold still a moment and trace again.")
 		return false
@@ -1462,7 +1576,7 @@ func _place_on_outline(world: PackedVector3Array) -> bool:
 ## Anchor on the detected surface under `origin_point` (XROrigin3D space)
 ## if one is right there (same height, a few cm), so ARCore keeps the anchor
 ## glued to that surface as it refines it. False if none is.
-func _anchor_on_surface_at(origin_point: Vector3) -> bool:
+func _anchor_on_surface_at(origin_point: Vector3, reach: float = 0.05) -> bool:
 	if xr_camera == null:
 		return false
 	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
@@ -1477,7 +1591,7 @@ func _anchor_on_surface_at(origin_point: Vector3) -> bool:
 	if pose == null:
 		return false
 	var at: Vector3 = (pose as Transform3D).origin
-	if absf(at.y - origin_point.y) > PLANE_HEIGHT_TOLERANCE or _flat_distance(at, origin_point) > 0.05:
+	if absf(at.y - origin_point.y) > PLANE_HEIGHT_TOLERANCE or _flat_distance(at, origin_point) > reach:
 		return false
 	return anchors.place_at_screen(Vector2(screen.x / maxf(1.0, size.x), screen.y / maxf(1.0, size.y)))
 
@@ -1580,6 +1694,16 @@ func _reset_drift() -> void:
 	_drift_have_prev = false
 	_drift_window = 0.0
 	_lost_seconds = 0.0
+	jump_holding = false
+	jumps_rejected = 0
+	jumps_accepted = 0
+	height_fixes = 0
+	plane_upgrades = 0
+	locked_on_plane = false
+	lock_plane_height = NAN
+	_height_bad_seconds = 0.0
+	_upgrade_elapsed = 0.0
+	_trusted_pose = anchors.pose
 
 
 ## Per frame: how far the anchor pose moved since the last frame, the most
@@ -1596,7 +1720,7 @@ func _track_drift(delta: float) -> void:
 	_drift_prev = at
 	_drift_have_prev = true
 	if _has_lock_origin:
-		drift_since_lock_mm = at.distance_to(_lock_origin) * 1000.0
+		drift_since_lock_mm = board_origin_point(shown_pose).distance_to(_lock_origin) * 1000.0
 
 
 ## Camera tracking lost: ARCore freezes the camera pose, so a visible board
@@ -1629,21 +1753,164 @@ func measure_surface_gap() -> float:
 	if bridge == null or pivot == null or not pivot.is_inside_tree():
 		return NAN
 	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
-	var board: Vector3 = origin_xform.affine_inverse() * pivot.global_position
-	var best: float = NAN
-	for entry: Variant in bridge.horizontal_planes():
-		var plane: Dictionary = entry as Dictionary
+	var under: Dictionary = plane_under(origin_xform.affine_inverse() * pivot.global_position, _lock_plane_preference())
+	surface_plane = int(under.get("index", -1))
+	surface_plane_height = float(under.get("height", NAN))
+	return float(under.get("gap", NAN))
+
+
+## Height of the plane a locked board belongs on (NAN if none).
+func _lock_plane_preference() -> float:
+	return lock_plane_height if placement != null and placement.locked and locked_on_plane else NAN
+
+
+## The detected plane whose outline contains `point`'s x/z (XROrigin3D
+## space) nearest to its height (or, with `prefer_height`, the one nearest
+## that height, e.g. the plane the board was locked on, so a board sunk
+## under the table is not measured against the floor): {"index", "height",
+## "gap" (point height minus plane height)}; empty if none.
+func plane_under(point: Vector3, prefer_height: float = NAN) -> Dictionary:
+	if bridge == null:
+		return {}
+	var best: Dictionary = {}
+	var planes: Array = bridge.horizontal_planes()
+	for i: int in planes.size():
+		var plane: Dictionary = planes[i] as Dictionary
 		var pose: Transform3D = plane.get("pose", Transform3D.IDENTITY) as Transform3D
 		var polygon: PackedVector2Array = plane.get("polygon", PackedVector2Array()) as PackedVector2Array
 		if polygon.size() < 3:
 			continue
-		var local: Vector3 = pose.affine_inverse() * board
+		var local: Vector3 = pose.affine_inverse() * point
 		if not Geometry2D.is_point_in_polygon(Vector2(local.x, local.z), polygon):
 			continue
-		var gap: float = board.y - pose.origin.y
-		if is_nan(best) or absf(gap) < absf(best):
-			best = gap
+		var gap: float = point.y - pose.origin.y
+		var score: float = absf(gap) if is_nan(prefer_height) else absf(pose.origin.y - prefer_height)
+		if best.is_empty() or score < float(best["score"]):
+			best = {"index": i, "height": pose.origin.y, "gap": gap, "score": score}
 	return best
+
+
+# --- Anchor guard ------------------------------------------------------------------
+
+## Per frame, before the pose is shown: an anchor pose that jumps by more
+## than JUMP_SUSPECT (e.g. ARCore relocalizing a free anchor after tracking
+## loss, the field case of a 65 cm jump that left the board 13 cm under the
+## table) is held back. The board stays at its last trusted pose until the
+## new pose has been steady for JUMP_CONFIRM_SECONDS; then the detected
+## planes decide (see _resolve_jump).
+func _update_jump_guard(delta: float) -> void:
+	if not anchors.has_anchor() or anchors.tracking != AnchorBackend.Tracking.TRACKING:
+		return
+	var pose: Transform3D = anchors.pose
+	if not jump_holding:
+		if not _is_jump(_trusted_pose, pose):
+			_trusted_pose = pose
+			return
+		jump_holding = true
+		_jump_target = pose
+		_jump_seconds = 0.0
+		if hud != null and not board_hidden_by_loss:
+			hud.set_status("Re-finding the table… hold the phone on the board.")
+		return
+	if not _is_jump(_trusted_pose, pose):
+		# The anchor came back on its own.
+		_end_jump_hold()
+		_trusted_pose = pose
+		return
+	if _is_jump(_jump_target, pose, JUMP_STEADY):
+		_jump_target = pose
+		_jump_seconds = 0.0
+		return
+	_jump_seconds += delta
+	if _jump_seconds >= JUMP_CONFIRM_SECONDS:
+		_resolve_jump()
+
+
+static func _is_jump(a: Transform3D, b: Transform3D, reach: float = JUMP_SUSPECT) -> bool:
+	if a.origin.distance_to(b.origin) > reach:
+		return true
+	return absf(a.basis.get_rotation_quaternion().angle_to(b.basis.get_rotation_quaternion())) > JUMP_SUSPECT_TURN
+
+
+## A held jump has been steady: compare both poses with the detected planes.
+## - the table is still under the board's old spot (at its height) -> the
+##   anchor alone jumped: reject it and re-anchor at the old spot;
+## - only the new spot sits on a plane -> the world (planes too) moved:
+##   accept it (eased in);
+## - neither, but a plane is under the new spot -> accept, snapped onto it;
+## - no planes to judge by -> accept.
+func _resolve_jump() -> void:
+	var old_point: Vector3 = board_origin_point(_trusted_pose)
+	var new_point: Vector3 = board_origin_point(anchors.pose)
+	var old_under: Dictionary = plane_under(old_point)
+	var new_under: Dictionary = plane_under(new_point)
+	var old_ok: bool = not old_under.is_empty() and absf(float(old_under["gap"])) <= PLANE_HEIGHT_TOLERANCE
+	var new_ok: bool = not new_under.is_empty() and absf(float(new_under["gap"])) <= PLANE_HEIGHT_TOLERANCE
+	if old_ok:
+		if reanchor_board(_trusted_pose, float(old_under["height"]), "jump rejected, plane under board", true, "jump rejected, free"):
+			jumps_rejected += 1
+			_end_jump_hold()
+		# else keep holding and retry next frame (e.g. camera not tracking).
+		return
+	jumps_accepted += 1
+	if new_ok and locked_on_plane:
+		lock_plane_height = float(new_under["height"])
+	var fix_height: bool = not new_ok and not new_under.is_empty() and absf(float(new_under["gap"])) <= HEIGHT_FIX_MAX and (locked_on_plane or not placement.locked)
+	_trusted_pose = anchors.pose
+	_end_jump_hold()
+	if fix_height and reanchor_board(anchors.pose, float(new_under["height"]), "jump accepted, snapped to plane", true):
+		height_fixes += 1
+		if locked_on_plane:
+			lock_plane_height = float(new_under["height"])
+
+
+func _end_jump_hold() -> void:
+	jump_holding = false
+	_jump_seconds = 0.0
+	if hud != null and not board_hidden_by_loss:
+		hud.apply_flow(flow)
+
+
+## Per frame while locked: keep the board on the plane it was locked on.
+## A board that sat on a detected plane at Lock but now floats / sinks
+## HEIGHT_FIX_MIN..HEIGHT_FIX_MAX against the plane under it for
+## HEIGHT_FIX_SECONDS is re-anchored onto that plane; a board on a free
+## anchor is moved onto a plane anchor as soon as a plane is under it.
+func _update_height_guard(delta: float) -> void:
+	if not placement.locked or jump_holding or not anchors.has_anchor() or anchors.tracking != AnchorBackend.Tracking.TRACKING:
+		_height_bad_seconds = 0.0
+		return
+	if int(tracking_info.get("camera_state", 0)) != CalibrationFlow.CAMERA_TRACKING:
+		_height_bad_seconds = 0.0
+		return
+	var under: Dictionary = plane_under(board_origin_point(shown_pose), _lock_plane_preference())
+	if under.is_empty():
+		_height_bad_seconds = 0.0
+		return
+	var gap: float = absf(float(under["gap"]))
+	if locked_on_plane and absf(float(under["height"]) - lock_plane_height) > PLANE_HEIGHT_TOLERANCE * 2.0:
+		# Not the plane the board was locked on (that one is not under it now).
+		_height_bad_seconds = 0.0
+		return
+	if gap <= PLANE_HEIGHT_TOLERANCE and anchor_kind != "plane":
+		_upgrade_elapsed += delta
+		if _upgrade_elapsed >= PLANE_UPGRADE_INTERVAL:
+			_upgrade_elapsed = 0.0
+			if reanchor_board(shown_pose, float(under["height"]), "upgraded free to plane", false):
+				plane_upgrades += 1
+				locked_on_plane = true
+				lock_plane_height = float(under["height"])
+	if not locked_on_plane or gap <= HEIGHT_FIX_MIN or gap > HEIGHT_FIX_MAX:
+		_height_bad_seconds = 0.0
+		return
+	_height_bad_seconds += delta
+	if _height_bad_seconds < HEIGHT_FIX_SECONDS:
+		return
+	_height_bad_seconds = 0.0
+	if reanchor_board(shown_pose, float(under["height"]), "height fixed to plane (%+.1fcm)" % (float(under["gap"]) * 100.0), true):
+		height_fixes += 1
+		lock_plane_height = float(under["height"])
+		surface_gap = measure_surface_gap()
 
 
 ## "anc T plane · d 0.2/3.1mm · lock 4mm · board 0.12,0.12,-0.70 · surf +0.3cm"
@@ -1659,14 +1926,24 @@ func drift_debug() -> String:
 		AnchorBackend.Tracking.PAUSED: state = "P"
 		AnchorBackend.Tracking.STOPPED: state = "S"
 	var board: Vector3 = pivot.global_position
+	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
+	var raw: Vector3 = origin_xform * anchors.pose.origin
 	var parts: PackedStringArray = [
-		"anc %s %s" % [state, anchor_kind],
+		"anc %s %s" % [state, anchor_kind] + ("" if anchor_reason.is_empty() else " (%s)" % anchor_reason),
 		"d %.1f/%.1fmm" % [drift_last_mm, drift_max_mm],
 	]
 	if _has_lock_origin:
 		parts.append("lock %.0fmm" % drift_since_lock_mm)
+	parts.append("anchor %.2f,%.2f,%.2f" % [raw.x, raw.y, raw.z])
 	parts.append("board %.2f,%.2f,%.2f" % [board.x, board.y, board.z])
-	parts.append("surf %s" % ("none" if is_nan(surface_gap) else "%+.1fcm" % (surface_gap * 100.0)))
+	parts.append("surf %s" % ("none" if is_nan(surface_gap) else "%+.1fcm" % (0.0 if absf(surface_gap) < 0.0005 else surface_gap * 100.0)))
+	if surface_plane >= 0:
+		parts.append("pl#%d h%.2f" % [surface_plane, surface_plane_height])
+	if jump_holding:
+		var origin_held: Vector3 = board_origin_point(_trusted_pose)
+		parts.append("jump held %.0fmm" % (board_origin_point(anchors.pose).distance_to(origin_held) * 1000.0))
+	if jumps_rejected + jumps_accepted + height_fixes + plane_upgrades > 0:
+		parts.append("fix rej%d acc%d h%d up%d" % [jumps_rejected, jumps_accepted, height_fixes, plane_upgrades])
 	if tracking_losses > 0:
 		parts.append("lost %d" % tracking_losses)
 	return " ".join(parts)

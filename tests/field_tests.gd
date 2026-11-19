@@ -260,9 +260,10 @@ func _test_world_lock() -> void:
 	check("lock: the board was dragged off its anchor", ar.placement.offset.length() > 0.05)
 	ar.set_locked(true)
 	await frames(1)
-	check("lock: locking re-anchors at the board's final spot without moving it", (
+	check("lock: locking re-anchors ON THE PLANE (hit test) at the board's final spot without moving it", (
 		xform_near(host.game.global_transform, before_lock, 0.0002) and ar.placement.offset.is_zero_approx()
-		and near(ar.anchors.pose.origin, before_lock.origin, 0.0002) and fake.anchor_calls[fake.anchor_calls.size() - 1] == "pose"
+		and near(ar.anchors.pose.origin, before_lock.origin, 0.0002) and fake.anchor_calls[fake.anchor_calls.size() - 1] == "screen"
+		and ar.anchor_kind == "plane" and ar.anchor_reason.contains("lock")
 	))
 	var locked: Transform3D = host.game.global_transform
 	var still: bool = true
@@ -286,21 +287,21 @@ func _test_world_lock() -> void:
 	ar.anchors.poll()
 	ar._apply_transforms(0.016)
 	check("world lock: small ARCore corrections apply at once", near(host.world_anchor.global_position, ar.anchors.pose.origin, 0.00001))
-	fake.pose_shift = Transform3D(Basis(), Vector3(0.12, 0.0, 0.0))
+	fake.pose_shift = Transform3D(Basis(), Vector3(0.06, 0.0, 0.0))
 	ar.anchors.poll()
 	ar._apply_transforms(0.016)
 	var first_step: float = host.world_anchor.global_position.distance_to(ar.anchors.pose.origin)
 	for i: int in 40:
 		ar._apply_transforms(0.016)
 	var settled: float = host.world_anchor.global_position.distance_to(ar.anchors.pose.origin)
-	check("world lock: a big correction after tracking returns eases in instead of snapping", first_step > 0.05 and settled < 0.002)
+	check("world lock: a mid-size correction (6 cm) after tracking returns eases in instead of snapping", first_step > 0.04 and settled < 0.002)
 	fake.pose_shift = Transform3D.IDENTITY
 	ar.anchors.poll()
 	ar._apply_transforms()
 	ar._process(0.25)
 	var debug: String = ar.debug_suffix()
 	check("debug: the AR line shows anchor state, drift, lock drift, board position and height over the surface (%s)" % debug, (
-		debug.contains("anc T free") and debug.contains("mm") and debug.contains("lock ") and debug.contains("board ") and debug.contains("surf +0.0cm")
+		debug.contains("anc T plane (lock") and debug.contains("mm") and debug.contains("anchor ") and debug.contains("pl#") and debug.contains("lock ") and debug.contains("board ") and debug.contains("surf +0.0cm")
 	))
 	fake.pose_shift = Transform3D(Basis(), Vector3(0.0, 0.05, 0.0))
 	ar.anchors.poll()

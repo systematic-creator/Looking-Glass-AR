@@ -7,7 +7,7 @@
 script = ExtResource("1_manifest")
 id = &"tic_tac_toe"
 display_name = "Tic-Tac-Toe"
-description = "Sample game. Two players take turns on one phone: tap a tile to place X or O. Proves the board contract end to end."
+description = "Sample game. Two players take turns on one phone: tap a tile to place X or O. 3x3, 4x4 or 5x5 boards with a session scoreboard. Proves the board contract end to end."
 icon = ExtResource("2_icon")
 min_players = 1
 max_players = 2
