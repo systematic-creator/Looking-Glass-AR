@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="LGGameManifest" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://platform/game/lg_game_manifest.gd" id="1_manifest"]
+[ext_resource type="Texture2D" path="res://games/stack_tower/icon.svg" id="2_icon"]
+
+[resource]
+script = ExtResource("1_manifest")
+id = &"stack_tower"
+display_name = "Stack Tower"
+description = "Timing game in a tall hologram box. Tap anywhere to drop the sliding slab on the tower: whatever overhangs is sliced off. Perfect drops build a streak and regrow the slab. How high can you go?"
+icon = ExtResource("2_icon")
+min_players = 1
+max_players = 1
+board_size = Vector2(0.3, 0.3)
+board_height = 0.3
+box_height = 0.8
+box_min_height = 0.35
+box_max_height = 1.2
+tall_box = true
+entry = "res://games/stack_tower/stack_tower.tscn"
+version = "0.1.0"
+author = "Looking Glass"
+tags = PackedStringArray("sample", "arcade", "tall")

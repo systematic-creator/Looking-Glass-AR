@@ -66,6 +66,8 @@ const TAP_SLOP_INCHES: float = 0.35
 const MAX_TAP_SLOP_PX: float = 120.0
 ## Hold the status line (top right) this long to toggle the debug line.
 const DEBUG_LONG_PRESS_SECONDS: float = 1.5
+## How fast the touch camera follows a game's focus height (1/s).
+const VIEW_FOCUS_EASE: float = 4.0
 var _status_press_time: float = -1.0
 ## Glow clipping state: the play-area version / anchor pose last applied.
 var _clip_version: int = -1
@@ -394,6 +396,7 @@ func route_gesture(gesture: Dictionary) -> void:
 
 func _process(delta: float) -> void:
 	_update_glow_clip()
+	_update_view_focus(delta)
 	if _status_press_time >= 0.0:
 		_status_press_time += delta
 		if _status_press_time >= DEBUG_LONG_PRESS_SECONDS:
@@ -409,6 +412,27 @@ func _process(delta: float) -> void:
 		(_tap_marker.material_override as StandardMaterial3D).albedo_color.a = t
 		if _tap_marker_time <= 0.0:
 			_tap_marker.visible = false
+
+
+## Outside AR, ease the orbit camera's centre to the game's focus height
+## (LGGame.view_focus_height(); < 0 keeps the fixed framing).
+func _update_view_focus(delta: float) -> void:
+	if game == null or session == null or session.is_ar():
+		return
+	var target: Variant = view_focus_point()
+	if target == null:
+		return
+	orbit_camera.position = orbit_camera.position.lerp(target as Vector3, 1.0 - exp(-VIEW_FOCUS_EASE * delta))
+
+
+## The orbit centre (host space) for the game's focus height, or null.
+func view_focus_point() -> Variant:
+	if game == null:
+		return null
+	var h: float = game.view_focus_height()
+	if h < 0.0:
+		return null
+	return to_local(game.to_global(Vector3(0.0, h, 0.0)))
 
 
 ## Brief ring where a tap met the board plane, so players see taps land.
