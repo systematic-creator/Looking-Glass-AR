@@ -36,6 +36,12 @@ func frame_board(board_size: Vector2, board_height: float) -> void:
 	_apply()
 
 
+## Portrait keeps the horizontal field of view (KEEP_WIDTH) so the board
+## that fits a landscape screen's height also fits a portrait screen's width.
+func set_portrait(portrait: bool) -> void:
+	camera.keep_aspect = Camera3D.KEEP_WIDTH if portrait else Camera3D.KEEP_HEIGHT
+
+
 func orbit(screen_delta: Vector2) -> void:
 	yaw = wrapf(yaw - screen_delta.x * ORBIT_RADIANS_PER_PIXEL, -PI, PI)
 	pitch = clampf(pitch - screen_delta.y * ORBIT_RADIANS_PER_PIXEL, MIN_PITCH, MAX_PITCH)

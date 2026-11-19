@@ -8,6 +8,11 @@ extends Control
 signal game_chosen(id: StringName)
 
 const CARD_SIZE: Vector2 = Vector2(360.0, 300.0)
+## Portrait: one full-width card per row (capped), a little shorter.
+const CARD_HEIGHT_PORTRAIT: float = 300.0
+const CARD_MAX_WIDTH_PORTRAIT: float = 640.0
+const MARGIN: float = 36.0
+const MARGIN_PORTRAIT: float = 28.0
 
 ## Optional override (tests); defaults to the LookingGlass catalog.
 var catalog: GameCatalog
@@ -17,6 +22,10 @@ var cards: Dictionary = {}
 
 var _grid: HFlowContainer
 var _empty_label: Label
+var _margin: MarginContainer
+var _title: Label
+## The layout applied last (follows the screen shape).
+var portrait: bool = false
 
 
 func _ready() -> void:
@@ -28,9 +37,8 @@ func _ready() -> void:
 	add_child(background)
 	var margin := MarginContainer.new()
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for side: String in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(side, 36)
 	add_child(margin)
+	_margin = margin
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 18)
 	margin.add_child(column)
@@ -39,10 +47,12 @@ func _ready() -> void:
 	title.add_theme_font_size_override("font_size", 54)
 	title.add_theme_color_override("font_color", Color(0.55, 0.95, 1.0))
 	column.add_child(title)
+	_title = title
 	var subtitle := Label.new()
 	subtitle.text = "Tabletop AR games. Pick one, then place its board on a table."
 	subtitle.add_theme_font_size_override("font_size", 24)
 	subtitle.add_theme_color_override("font_color", Color(0.78, 0.82, 0.88))
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(subtitle)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -52,12 +62,41 @@ func _ready() -> void:
 	_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_grid.add_theme_constant_override("h_separation", 24)
 	_grid.add_theme_constant_override("v_separation", 24)
+	_grid.alignment = FlowContainer.ALIGNMENT_BEGIN
 	scroll.add_child(_grid)
 	_empty_label = Label.new()
 	_empty_label.text = "No games installed."
 	_empty_label.add_theme_font_size_override("font_size", 26)
 	column.add_child(_empty_label)
 	refresh()
+	get_viewport().size_changed.connect(_on_viewport_resized)
+	apply_layout(LGOrientation.is_portrait_size(get_viewport().get_visible_rect().size))
+
+
+func _on_viewport_resized() -> void:
+	apply_layout(LGOrientation.is_portrait_size(get_viewport().get_visible_rect().size))
+
+
+## Landscape: a flowing grid of cards. Portrait: one centred column of wide
+## cards, smaller title and margins.
+func apply_layout(p_portrait: bool) -> void:
+	portrait = p_portrait
+	var margin: float = MARGIN_PORTRAIT if portrait else MARGIN
+	for side: String in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		_margin.add_theme_constant_override(side, int(margin))
+	_title.add_theme_font_size_override("font_size", 46 if portrait else 54)
+	_grid.alignment = FlowContainer.ALIGNMENT_CENTER if portrait else FlowContainer.ALIGNMENT_BEGIN
+	var size: Vector2 = card_size()
+	for card: Variant in cards.values():
+		(card as Control).custom_minimum_size = size
+
+
+## The card size for the current layout and viewport.
+func card_size() -> Vector2:
+	if not portrait:
+		return CARD_SIZE
+	var width: float = get_viewport().get_visible_rect().size.x - 2.0 * MARGIN_PORTRAIT - 12.0
+	return Vector2(clampf(width, CARD_SIZE.x, CARD_MAX_WIDTH_PORTRAIT), CARD_HEIGHT_PORTRAIT)
 
 
 func _catalog() -> GameCatalog:
@@ -97,7 +136,7 @@ func choose(id: StringName) -> void:
 func _make_card(manifest: LGGameManifest) -> Button:
 	var card := Button.new()
 	card.name = "Card_%s" % manifest.id
-	card.custom_minimum_size = CARD_SIZE
+	card.custom_minimum_size = card_size() if _margin != null else CARD_SIZE
 	card.focus_mode = Control.FOCUS_NONE
 	card.clip_contents = true
 	var style := StyleBoxFlat.new()

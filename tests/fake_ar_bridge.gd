@@ -29,6 +29,15 @@ var pose_shift: Transform3D = Transform3D.IDENTITY
 var anchor_shift: Dictionary = {}
 ## How anchors were made, in order: "screen" or "pose".
 var anchor_calls: Array[String] = []
+## Screen rotation model (the patched plugin's set_display_rotation):
+## whether this "build" supports it, the device's Surface.ROTATION_* (-1 =
+## unknown: the window shape decides), what ARCore was told, every change,
+## and the corner UVs it reports for non-landscape rotations.
+var rotation_supported: bool = true
+var device_rot: int = -1
+var rotation: int = 1
+var rotation_calls: Array[int] = []
+var corner_uvs: PackedVector2Array = PackedVector2Array([Vector2(1.0, 0.8), Vector2(1.0, 0.2), Vector2(0.0, 0.8), Vector2(0.0, 0.2)])
 var _poses: Dictionary = {}
 var _next_id: int = 1
 
@@ -59,6 +68,40 @@ func pause() -> void:
 
 func resume() -> void:
 	pass
+
+
+func supports_rotation() -> bool:
+	return rotation_supported
+
+
+func device_rotation() -> int:
+	return device_rot
+
+
+func sync_display_rotation(window: Vector2) -> int:
+	if not running or not rotation_supported:
+		return -1
+	var r: int = device_rot if device_rot >= 0 else LGOrientation.fallback_rotation(window)
+	if r != rotation:
+		rotation = r
+		rotation_calls.append(r)
+	return r
+
+
+func display_rotation() -> int:
+	return rotation
+
+
+func uses_custom_background() -> bool:
+	return rotation_supported and rotation != 1
+
+
+func background_uvs() -> PackedVector2Array:
+	return corner_uvs if uses_custom_background() else PackedVector2Array()
+
+
+func camera_feed_id() -> int:
+	return 1
 
 
 func tracking_status() -> int:

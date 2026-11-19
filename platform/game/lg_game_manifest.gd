@@ -31,6 +31,12 @@ extends Resource
 ## PlayBox.TALL_MAX_HEIGHT (3.0 m). On a table the player's placement scale
 ## shrinks the whole box as usual. Keep it off for table games.
 @export var tall_box: bool = false
+## Screen orientation while this game runs: "either" (default: the game
+## follows the phone, its HUD lays out for portrait and landscape),
+## "landscape" or "portrait" (the game opts out of the other one). Applied by
+## GameHost on load (sensor-based, so both landscape directions or both
+## portrait directions still work) and restored to "either" on exit.
+@export_enum("either", "landscape", "portrait") var orientation: String = "either"
 ## Entry point: a .tscn whose root script extends LGGame, or a .gd script
 ## that extends LGGame.
 @export_file("*.tscn", "*.gd") var entry: String = ""
@@ -66,6 +72,8 @@ func validate() -> PackedStringArray:
 		errors.append("box_min_height must be <= box_max_height")
 	elif tall_box and maxf(box_height, box_max_height) > PlayBox.TALL_MAX_HEIGHT + 0.0001:
 		errors.append("tall_box heights must be <= %.1f m" % PlayBox.TALL_MAX_HEIGHT)
+	if not LGOrientation.is_valid_mode(orientation):
+		errors.append("orientation '%s' must be one of %s" % [orientation, ", ".join(LGOrientation.MODES)])
 	if entry.is_empty():
 		errors.append("entry is empty")
 	elif not (entry.ends_with(".tscn") or entry.ends_with(".gd")):

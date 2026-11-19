@@ -13,6 +13,17 @@ extends Node3D
 ##     OrbitCamera            <- fallback (non-AR) camera
 ##     ARSession              <- AR camera, calibration HUD
 ##     HostHud                <- "Games" button + game status line
+##
+## Orientation: on load the game's manifest orientation is applied through
+## the app's OrientationService ("either" by default) and "either" is
+## restored on exit. On a rotation the host re-lays out its HUD, the AR HUD
+## and the touch camera, recomputes the tap slop / swipe threshold for the
+## new screen, tells ARCore (ARSession) and then the game
+## (LGGame._on_orientation_changed). The anchor and the board never move.
+##
+## Swipes: while the game captures_swipes(), one-finger strokes also go
+## through a SwipeDetector (screen space) to LGGame._on_swipe, and never
+## orbit the touch camera.
 
 signal game_loaded(game: LGGame)
 signal exited()
@@ -41,6 +52,12 @@ var environment: Environment
 var load_error: String = ""
 
 var _gestures: GestureTracker = GestureTracker.new()
+var _swipes: SwipeDetector = SwipeDetector.new()
+## The app's orientation service (the LookingGlass autoload's, or our own).
+var orientation: OrientationService
+## True while the screen is portrait.
+var portrait: bool = false
+var swipes_seen: int = 0
 var _hud: CanvasLayer
 var _back_button: Button
 var _status_label: Label
@@ -76,6 +93,12 @@ var _status_press_pos: Vector2 = Vector2.ZERO
 
 
 func _ready() -> void:
+	orientation = OrientationService.of(self)
+	if orientation == null:
+		orientation = OrientationService.new()
+		add_child(orientation)
+	orientation.orientation_changed.connect(_on_orientation_changed)
+	portrait = LGOrientation.is_portrait_size(get_viewport().get_visible_rect().size)
 	_setup_environment()
 	world_anchor = Node3D.new()
 	world_anchor.name = "WorldAnchor"
@@ -85,7 +108,9 @@ func _ready() -> void:
 	world_anchor.add_child(pivot)
 	orbit_camera = OrbitCamera.new()
 	add_child(orbit_camera)
+	orbit_camera.set_portrait(portrait)
 	_build_hud()
+	_apply_hud_layout()
 	Holo.set_clip(null, PackedVector2Array())
 	if not _load_game():
 		_status_label.text = load_error
@@ -113,6 +138,14 @@ func _ready() -> void:
 	set_box_height(session.placement.box_height)
 	_on_board_lock_changed(session.is_board_locked())
 	_gestures.tap_slop_px = tap_slop_for_screen()
+	_swipes.threshold_px = swipe_threshold_for_screen()
+	if session.hud != null:
+		session.hud.apply_layout(portrait)
+
+
+func _exit_tree() -> void:
+	if orientation != null and orientation.orientation_changed.is_connected(_on_orientation_changed):
+		orientation.orientation_changed.disconnect(_on_orientation_changed)
 
 
 func _load_game() -> bool:
@@ -137,6 +170,8 @@ func _load_game() -> bool:
 		return false
 	game_id = id
 	game.name = "Game"
+	orientation.request(manifest.orientation)
+	game.lg_set_portrait(portrait)
 	box = PlayBox.from_manifest(manifest)
 	game.lg_set_box(box)
 	pivot.add_child(game)
@@ -208,6 +243,8 @@ func exit_game() -> void:
 	if _exiting:
 		return
 	_exiting = true
+	if orientation != null:
+		orientation.restore_default()
 	if game != null:
 		game.lg_exit()
 	if session != null:
@@ -263,6 +300,12 @@ func tap_slop_for_screen() -> float:
 		get_viewport().get_visible_rect().size.y)
 
 
+## Swipe threshold in viewport pixels for this screen (SwipeDetector).
+func swipe_threshold_for_screen() -> float:
+	return SwipeDetector.threshold_for(float(DisplayServer.screen_get_dpi()), float(DisplayServer.window_get_size().y),
+		get_viewport().get_visible_rect().size.y)
+
+
 static func tap_slop_px_for(dpi: float, window_height: float, view_height: float) -> float:
 	if dpi <= 0.0 or window_height <= 0.0 or view_height <= 0.0:
 		return GestureTracker.TAP_SLOP_PX
@@ -301,9 +344,22 @@ func _input(event: InputEvent) -> void:
 		if is_over_platform_ui((event as InputEventScreenTouch).position):
 			return
 	var gesture: Dictionary = _gestures.handle(event)
-	if session.captures_touch() or gesture.is_empty():
+	var swipe: Dictionary = {}
+	if game.captures_swipes():
+		swipe = _swipes.handle(event, Time.get_ticks_usec() / 1000000.0)
+	if session.captures_touch():
+		return
+	if not swipe.is_empty():
+		route_swipe(swipe)
+	if gesture.is_empty():
 		return
 	route_gesture(gesture)
+
+
+## Send one swipe (from SwipeDetector) to the game.
+func route_swipe(swipe: Dictionary) -> void:
+	swipes_seen += 1
+	game.lg_swipe(swipe["direction"] as Vector2i, swipe)
 
 
 ## Send one gesture (from GestureTracker) to the game or the camera.
@@ -330,7 +386,7 @@ func route_gesture(gesture: Dictionary) -> void:
 				var to: Variant = screen_to_board(camera, game, gesture["to"] as Vector2, pick_height())
 				if from != null and to != null:
 					game.lg_drag(from as Vector3, to as Vector3)
-			elif not session.is_ar():
+			elif not session.is_ar() and not game.captures_swipes():
 				orbit_camera.orbit((gesture["to"] as Vector2) - (gesture["from"] as Vector2))
 		&"pinch":
 			if not session.is_ar():
@@ -502,6 +558,47 @@ func _status_hit_rect() -> Rect2:
 		_status_label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, _status_label.get_theme_font_size("font_size")).x
 	var width: float = clampf(text_width + 32.0, 120.0, rect.size.x)
 	return Rect2(Vector2(rect.end.x - width, rect.position.y - 12.0), Vector2(width, maxf(rect.size.y, 40.0) + 24.0))
+
+
+# --- Orientation --------------------------------------------------------------------
+
+## The screen turned (OrientationService): re-lay out, refresh the touch
+## thresholds (same inches, new pixels), tell the AR session (HUD + ARCore
+## display rotation) and then the game. Nothing in the world moves.
+func _on_orientation_changed(p_portrait: bool) -> void:
+	portrait = p_portrait
+	_apply_hud_layout()
+	if orbit_camera != null:
+		orbit_camera.set_portrait(portrait)
+	_gestures.reset()
+	_swipes.reset()
+	_dragging_board = false
+	_status_press_time = -1.0
+	_gestures.tap_slop_px = tap_slop_for_screen()
+	_swipes.threshold_px = swipe_threshold_for_screen()
+	if session != null:
+		session.on_orientation_changed(portrait)
+	if game != null:
+		game.lg_set_portrait(portrait)
+	refresh_status()
+
+
+## Host HUD: landscape keeps the status line top right; portrait spreads it
+## across the top beside "‹ Games" (the right edge alone is too narrow).
+func _apply_hud_layout() -> void:
+	if _status_label == null:
+		return
+	if portrait:
+		_status_label.anchor_left = 0.0
+		_status_label.anchor_right = 1.0
+		_status_label.offset_left = 180.0
+		_status_label.offset_right = -24.0
+	else:
+		_status_label.anchor_left = 1.0
+		_status_label.anchor_right = 1.0
+		_status_label.offset_left = -520.0
+		_status_label.offset_right = -24.0
+	_status_label.offset_top = 24.0
 
 
 # --- Scene ------------------------------------------------------------------------

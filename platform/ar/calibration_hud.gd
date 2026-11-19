@@ -27,6 +27,15 @@ signal debug_toggled(visible: bool)
 
 const PRIMARY_SIZE: Vector2 = Vector2(260.0, 96.0)
 const SECONDARY_SIZE: Vector2 = Vector2(170.0, 80.0)
+## Portrait (720-wide base canvas): smaller buttons, wrapped onto rows.
+const PRIMARY_SIZE_PORTRAIT: Vector2 = Vector2(228.0, 88.0)
+const SECONDARY_SIZE_PORTRAIT: Vector2 = Vector2(150.0, 76.0)
+const BANNER_TEXT_WIDTH: float = 640.0
+const BANNER_TEXT_WIDTH_PORTRAIT: float = 520.0
+## Portrait: the banner starts below the host's "‹ Games" and "dbg" buttons
+## (top-left); in landscape it sits between them and the right edge.
+const TOP_MARGIN: float = 24.0
+const TOP_MARGIN_PORTRAIT: float = 156.0
 const DEBUG_TAPS: int = 5
 const DEBUG_TAP_WINDOW: float = 2.0
 
@@ -68,6 +77,12 @@ var _sweep_time: float = 0.0
 var _banner: PanelContainer
 var _tap_times: Array[float] = []
 var _clock: float = 0.0
+var _row: HFlowContainer
+var _margin: MarginContainer
+var _banner_labels: Array[Label] = []
+var _primary: Dictionary = {}
+## The layout applied last (apply_layout).
+var portrait: bool = false
 
 
 func _ready() -> void:
@@ -78,6 +93,7 @@ func _ready() -> void:
 	for side: String in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
 		margin.add_theme_constant_override(side, 24)
 	add_child(margin)
+	_margin = margin
 	var column := VBoxContainer.new()
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_theme_constant_override("separation", 12)
@@ -136,12 +152,16 @@ func _ready() -> void:
 	arrows.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sweep_hint.add_child(arrows)
 
-	# Bottom: big buttons.
-	var row := HBoxContainer.new()
+	# Bottom: big buttons (one centred line in landscape; in portrait they
+	# wrap onto more lines, still centred).
+	var row := HFlowContainer.new()
+	row.name = "Buttons"
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 18)
+	row.alignment = FlowContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("h_separation", 18)
+	row.add_theme_constant_override("v_separation", 14)
 	column.add_child(row)
+	_row = row
 	trace_button = _button(row, "Trace play area", PRIMARY_SIZE, true)
 	trace_button.pressed.connect(func() -> void: trace_pressed.emit())
 	use_area_button = _button(row, "Use my outline", PRIMARY_SIZE, true)
@@ -200,7 +220,34 @@ func _ready() -> void:
 	fit_handles = FitHandles.new()
 	add_child(fit_handles)
 	move_child(fit_handles, 0)
+	apply_layout(LGOrientation.is_portrait_size(get_viewport().get_visible_rect().size))
 	apply_flow(CalibrationFlow.new())
+
+
+## Lay the HUD out for portrait or landscape. Anchors handle most of it;
+## this sizes what they cannot: button sizes, the banner's text width, the
+## debug block and the Airspace panel.
+func apply_layout(p_portrait: bool) -> void:
+	portrait = p_portrait
+	for button: Button in all_buttons():
+		var primary: bool = bool(_primary.get(button, false))
+		if portrait:
+			button.custom_minimum_size = PRIMARY_SIZE_PORTRAIT if primary else SECONDARY_SIZE_PORTRAIT
+			button.add_theme_font_size_override("font_size", 25 if primary else 20)
+		else:
+			button.custom_minimum_size = PRIMARY_SIZE if primary else SECONDARY_SIZE
+			button.add_theme_font_size_override("font_size", 28 if primary else 22)
+	for label: Label in _banner_labels:
+		label.custom_minimum_size.x = BANNER_TEXT_WIDTH_PORTRAIT if portrait else BANNER_TEXT_WIDTH
+	_margin.add_theme_constant_override("margin_top", int(TOP_MARGIN_PORTRAIT if portrait else TOP_MARGIN))
+	debug_label.offset_left = 24.0 if portrait else 100.0
+	debug_label.offset_right = -24.0 if portrait else -150.0
+	# Portrait: the Airspace panel sits a little higher (the button rows are
+	# taller there) and shorter.
+	airspace_panel.offset_top = -260.0 if portrait else -170.0
+	airspace_panel.offset_bottom = 40.0 if portrait else 170.0
+	if _row != null:
+		_row.queue_sort()
 
 
 func _build_airspace_panel() -> void:
@@ -293,10 +340,11 @@ func _label(parent: Control, font_size: int, color: Color) -> Label:
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	label.custom_minimum_size = Vector2(640.0, 0.0)
+	label.custom_minimum_size = Vector2(BANNER_TEXT_WIDTH, 0.0)
 	label.add_theme_font_size_override("font_size", font_size)
 	label.add_theme_color_override("font_color", color)
 	parent.add_child(label)
+	_banner_labels.append(label)
 	return label
 
 
@@ -320,6 +368,7 @@ func _button(parent: Control, text: String, min_size: Vector2, primary: bool) ->
 	button.add_theme_stylebox_override("pressed", pressed)
 	button.add_theme_stylebox_override("hover_pressed", pressed)
 	parent.add_child(button)
+	_primary[button] = primary
 	return button
 
 

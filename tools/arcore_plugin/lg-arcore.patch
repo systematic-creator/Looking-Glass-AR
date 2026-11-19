@@ -1,9 +1,9 @@
 diff --git a/plugin/src/main/cpp/arcore_anchors.cpp b/plugin/src/main/cpp/arcore_anchors.cpp
 new file mode 100644
-index 0000000..dca2bca
+index 0000000..36d041d
 --- /dev/null
 +++ b/plugin/src/main/cpp/arcore_anchors.cpp
-@@ -0,0 +1,423 @@
+@@ -0,0 +1,425 @@
 +// Looking Glass additions to the GodotVR ARCore plugin:
 +// horizontal-plane hit testing and ARCore anchors exposed to GDScript.
 +// Licensed under the plugin's MIT license.
@@ -291,6 +291,8 @@ index 0000000..dca2bca
 +	out["camera_texture"] = Vector2i(m_texture_width, m_texture_height);
 +	out["camera_position"] = m_last_camera_position;
 +	out["vertical_orientation"] = m_vertical_orientation;
++	out["display_rotation"] = m_display_rotation;
++	out["custom_background"] = m_display_rotation != 1;
 +	int32_t planes = 0;
 +	int32_t upward = 0;
 +	int32_t points = 0;
@@ -428,10 +430,10 @@ index 0000000..dca2bca
 +	m_render_planes = p_enable;
 +}
 diff --git a/plugin/src/main/cpp/arcore_interface.cpp b/plugin/src/main/cpp/arcore_interface.cpp
-index ac0c96c..ff0ba10 100644
+index ac0c96c..fbe186d 100644
 --- a/plugin/src/main/cpp/arcore_interface.cpp
 +++ b/plugin/src/main/cpp/arcore_interface.cpp
-@@ -30,6 +30,17 @@ void ARCoreInterface::_bind_methods() {
+@@ -30,6 +30,21 @@ void ARCoreInterface::_bind_methods() {
  	ClassDB::bind_method(D_METHOD("get_light_color_correction"), &ARCoreInterface::get_light_color_correction);
  	ClassDB::bind_method(D_METHOD("get_light_main_hdr_direction"), &ARCoreInterface::get_light_main_hdr_direction);
  	ClassDB::bind_method(D_METHOD("get_light_main_hdr_intensity"), &ARCoreInterface::get_light_main_hdr_intensity);
@@ -446,10 +448,14 @@ index ac0c96c..ff0ba10 100644
 +	ClassDB::bind_method(D_METHOD("get_horizontal_planes"), &ARCoreInterface::get_horizontal_planes);
 +	ClassDB::bind_method(D_METHOD("get_point_cloud", "max_points"), &ARCoreInterface::get_point_cloud);
 +	ClassDB::bind_method(D_METHOD("set_plane_rendering", "enable"), &ARCoreInterface::set_plane_rendering);
++	ClassDB::bind_method(D_METHOD("set_display_rotation", "rotation"), &ARCoreInterface::set_display_rotation);
++	ClassDB::bind_method(D_METHOD("get_display_rotation"), &ARCoreInterface::get_display_rotation);
++	ClassDB::bind_method(D_METHOD("uses_custom_background"), &ARCoreInterface::uses_custom_background);
++	ClassDB::bind_method(D_METHOD("get_background_uvs"), &ARCoreInterface::get_background_uvs);
  	ClassDB::bind_method(D_METHOD("getNear"), &ARCoreInterface::getNear);
  	ClassDB::bind_method(D_METHOD("getFar"), &ARCoreInterface::getFar);
  }
-@@ -50,6 +61,11 @@ ARCoreInterface::ARCoreInterface() {
+@@ -50,6 +65,11 @@ ARCoreInterface::ARCoreInterface() {
  	m_enable_images_detection = false;
  	m_enable_point_cloud_detection = false;
  	m_enable_light_estimation = false;
@@ -461,7 +467,7 @@ index ac0c96c..ff0ba10 100644
  
  	// This is just a default and will be changed by ARCore
  	m_projection.set_perspective(60.0, 1.0, m_z_near, m_z_far, false);
-@@ -74,6 +90,7 @@ void ARCoreInterface::start() {
+@@ -74,6 +94,7 @@ void ARCoreInterface::start() {
  void ARCoreInterface::_resume() {
  	if (m_init_status == INITIALISED && m_ar_session != nullptr) {
  		ArStatus status = ArSession_resume(m_ar_session);
@@ -469,7 +475,7 @@ index ac0c96c..ff0ba10 100644
  
  		if (status != AR_SUCCESS) {
  			ALOGE("ARCorePlugin: Failed to resume");
-@@ -377,6 +394,7 @@ void ARCoreInterface::_uninitialize() {
+@@ -377,6 +398,7 @@ void ARCoreInterface::_uninitialize() {
  		ERR_FAIL_NULL(xr_server);
  
  		if (m_ar_session != nullptr) {
@@ -477,7 +483,7 @@ index ac0c96c..ff0ba10 100644
  			ArSession_destroy(m_ar_session);
  			ArFrame_destroy(m_ar_frame);
  
-@@ -636,15 +654,72 @@ void ARCoreInterface::_process() {
+@@ -636,15 +658,89 @@ void ARCoreInterface::_process() {
  		return;
  	}
  
@@ -489,7 +495,7 @@ index ac0c96c..ff0ba10 100644
 +		_resume();
 +	}
 +
-+	// The app is locked to landscape (ROTATION_90).
++	// Landscape (ROTATION_90, the default) keeps the original path below.
 +	//
 +	// Godot 4.4's camera-feed background (drivers/gles3/shaders/feed.glsl)
 +	// draws the WHOLE camera texture stretched over the screen, with no UV
@@ -503,14 +509,21 @@ index ac0c96c..ff0ba10 100644
 +	Size2i window = DisplayServer::get_singleton()->window_get_size();
 +	int32_t screen_w = window.x > 0 ? window.x : m_screen_height;
 +	int32_t screen_h = window.y > 0 ? window.y : m_screen_width;
-+	if (m_texture_width > 0 && m_texture_height > 0) {
++	if (m_display_rotation != (int32_t)Orientation::ROTATION_90) {
++		// Portrait / reverse landscape (Looking Glass): the app draws the
++		// camera image itself with get_background_uvs(), so ARCore gets the
++		// real rotation and window size; its projection, view matrix and
++		// hit tests then match that drawing (a centre crop of the image).
++		m_display_width = screen_w;
++		m_display_height = screen_h;
++	} else if (m_texture_width > 0 && m_texture_height > 0) {
 +		m_display_height = screen_h;
 +		m_display_width = (int32_t)((double)screen_h * (double)m_texture_width / (double)m_texture_height + 0.5);
 +	} else {
 +		m_display_width = screen_w;
 +		m_display_height = screen_h;
 +	}
-+	ArSession_setDisplayGeometry(m_ar_session, (int32_t)(Orientation::ROTATION_90), m_display_width, m_display_height);
++	ArSession_setDisplayGeometry(m_ar_session, m_display_rotation, m_display_width, m_display_height);
  	ArSession_setCameraTextureName(m_ar_session, m_background_renderer.getTextureId());
  
 -	if (ArSession_update(m_ar_session, m_ar_frame) != AR_SUCCESS) {
@@ -532,6 +545,16 @@ index ac0c96c..ff0ba10 100644
 +	if (update_status != AR_SUCCESS) {
  		ALOGW("ARCorePlugin: OnDrawFrame ARSession_update error");
  	}
++	if (update_status == AR_SUCCESS && m_display_rotation != (int32_t)Orientation::ROTATION_90) {
++		const float ndc[8] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f };
++		float uvs[8];
++		ArFrame_transformCoordinates2d(m_ar_session, m_ar_frame, AR_COORDINATES_2D_OPENGL_NORMALIZED_DEVICE_COORDINATES, 4, ndc,
++				AR_COORDINATES_2D_TEXTURE_NORMALIZED, uvs);
++		m_background_uvs.resize(4);
++		for (int k = 0; k < 4; k++) {
++			m_background_uvs.set(k, godot::Vector2(uvs[2 * k], uvs[2 * k + 1]));
++		}
++	}
  
  	ArCamera *ar_camera;
  	ArFrame_acquireCamera(m_ar_session, m_ar_frame, &ar_camera);
@@ -552,7 +575,7 @@ index ac0c96c..ff0ba10 100644
  
  	float view_mat[16];
  
-@@ -670,6 +745,7 @@ void ARCoreInterface::_process() {
+@@ -670,6 +766,7 @@ void ARCoreInterface::_process() {
  	}
  
  	m_view.invert();
@@ -560,7 +583,7 @@ index ac0c96c..ff0ba10 100644
  
  	if (m_head.is_valid()) {
  		// Set our head position, note in real space, reference frame and world scale is applied later
-@@ -687,6 +763,15 @@ void ARCoreInterface::_process() {
+@@ -687,6 +784,15 @@ void ARCoreInterface::_process() {
  
  	ArTrackingState camera_m_tracking_status;
  	ArCamera_getTrackingState(m_ar_session, ar_camera, &camera_m_tracking_status);
@@ -576,7 +599,7 @@ index ac0c96c..ff0ba10 100644
  
  	m_tracking_status = ar_tracking_state_to_tracking_status(*m_ar_session, *ar_camera, camera_m_tracking_status);
  
-@@ -701,7 +786,7 @@ void ARCoreInterface::_process() {
+@@ -701,7 +807,7 @@ void ARCoreInterface::_process() {
  		estimateLight();
  	}
  
@@ -585,7 +608,7 @@ index ac0c96c..ff0ba10 100644
  		m_plane_renderer.process(*m_ar_session);
  	} else {
  		m_plane_renderer.clear();
-@@ -750,6 +835,10 @@ void ARCoreInterface::notification(int p_what) {
+@@ -750,6 +856,10 @@ void ARCoreInterface::notification(int p_what) {
  }
  
  void ARCoreInterface::configureSession() {
@@ -596,7 +619,7 @@ index ac0c96c..ff0ba10 100644
  	ArConfig *ar_config = nullptr;
  	ArConfig_create(m_ar_session, &ar_config);
  	if (is_depth_supported() && m_enable_depth_estimation) {
-@@ -779,6 +868,13 @@ void ARCoreInterface::configureSession() {
+@@ -779,6 +889,23 @@ void ARCoreInterface::configureSession() {
  	}
  
  	ERR_FAIL_NULL(ar_config);
@@ -610,9 +633,19 @@ index ac0c96c..ff0ba10 100644
 +	if (configure_status != AR_SUCCESS) {
 +		ALOGE("ARCorePlugin: ArSession_configure failed (%d)", (int)configure_status);
 +	}
++}
++
++void ARCoreInterface::set_display_rotation(int32_t p_rotation) {
++	if (p_rotation < 0 || p_rotation > 3) {
++		return;
++	}
++	if (p_rotation != m_display_rotation) {
++		m_display_rotation = p_rotation;
++		m_background_uvs.clear();
++	}
  }
 diff --git a/plugin/src/main/cpp/arcore_interface.h b/plugin/src/main/cpp/arcore_interface.h
-index 04937c6..876a71b 100644
+index 04937c6..345b01b 100644
 --- a/plugin/src/main/cpp/arcore_interface.h
 +++ b/plugin/src/main/cpp/arcore_interface.h
 @@ -11,6 +11,8 @@
@@ -624,7 +657,7 @@ index 04937c6..876a71b 100644
  
  #include "background_renderer.h"
  #include "instances_renderer.h"
-@@ -87,6 +89,22 @@ public:
+@@ -87,6 +89,37 @@ public:
  	godot::Vector3 get_light_main_hdr_direction();
  	godot::Vector3 get_light_main_hdr_intensity();
  
@@ -643,11 +676,26 @@ index 04937c6..876a71b 100644
 +	godot::Array get_horizontal_planes();
 +	godot::PackedVector3Array get_point_cloud(int32_t p_max_points);
 +	void set_plane_rendering(bool p_enable);
++	// Display rotation (Looking Glass): Android Surface.ROTATION_* of the
++	// window, 0..3. The app reads it from the Kotlin plugin
++	// (getDisplayRotation) and passes it in; default 1 = landscape. At 1 the
++	// plugin keeps the original landscape path (Godot's feed shader stretches
++	// the camera texture over the screen). Any other rotation tells ARCore
++	// the real rotation and window size, and the app draws the passthrough
++	// itself with get_background_uvs() (Godot 4.4's feed shader cannot
++	// rotate the image).
++	void set_display_rotation(int32_t p_rotation);
++	int32_t get_display_rotation() const { return m_display_rotation; }
++	bool uses_custom_background() const { return m_display_rotation != 1; }
++	// Camera-texture UVs (ARCore TEXTURE_NORMALIZED) for the screen corners,
++	// in OpenGL NDC order: (-1,-1), (1,-1), (-1,1), (1,1). Empty until the
++	// first frame in a custom-background rotation.
++	godot::PackedVector2Array get_background_uvs() const { return m_background_uvs; }
 +
  	float getNear() { return m_z_near; }
  	float getFar() { return m_z_far; }
  
-@@ -133,6 +151,32 @@ private:
+@@ -133,6 +166,34 @@ private:
  
  	void configureSession();
  
@@ -666,6 +714,8 @@ index 04937c6..876a71b 100644
 +	int32_t m_texture_height = 0;
 +	int32_t m_display_width = 0;
 +	int32_t m_display_height = 0;
++	int32_t m_display_rotation = 1; // Surface.ROTATION_90: landscape
++	godot::PackedVector2Array m_background_uvs;
 +	godot::Vector3 m_last_camera_position;
 +	int32_t m_last_failure_reason = 0; // ArTrackingFailureReason
 +	int32_t m_last_update_status = 0; // ArStatus of the last ArSession_update
@@ -681,18 +731,20 @@ index 04937c6..876a71b 100644
  
  	void estimateLight();
 diff --git a/plugin/src/main/java/org/godotengine/plugin/android/arcore/ARCorePlugin.kt b/plugin/src/main/java/org/godotengine/plugin/android/arcore/ARCorePlugin.kt
-index f2d1c3d..51ae5cf 100644
+index f2d1c3d..664088e 100644
 --- a/plugin/src/main/java/org/godotengine/plugin/android/arcore/ARCorePlugin.kt
 +++ b/plugin/src/main/java/org/godotengine/plugin/android/arcore/ARCorePlugin.kt
-@@ -2,6 +2,7 @@
+@@ -2,7 +2,9 @@
  package org.godotengine.plugin.android.arcore
  
  import android.app.Activity
 +import android.content.pm.ApplicationInfo
  import android.content.pm.PackageManager
++import android.os.Build
  import android.util.Log
  import android.view.View
-@@ -296,6 +297,25 @@ class ARCorePlugin(godot: Godot): GodotPlugin(godot) {
+ import android.widget.Toast
+@@ -296,6 +298,43 @@ class ARCorePlugin(godot: Godot): GodotPlugin(godot) {
  
      override fun getPluginGDExtensionLibrariesPaths() = setOf("res://addons/${BuildConfig.GODOT_PLUGIN_NAME}/plugin.gdextension")
  
@@ -709,6 +761,24 @@ index f2d1c3d..51ae5cf 100644
 +    // Samsung + Google Play Services for AR 1.52+ track badly (no feature
 +    // points, drifting anchors) in debuggable apps. Shown so a debug build
 +    // on a phone is obvious.
++    // The window's Surface.ROTATION_* (0..3), or -1 if unknown. The app
++    // passes it to ARCoreInterface.set_display_rotation() so ARCore and the
++    // passthrough follow the screen (Looking Glass portrait support).
++    @UsedByGodot
++    fun getDisplayRotation(): Int {
++        val act = activity ?: return -1
++        return try {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++                act.display?.rotation ?: -1
++            } else {
++                @Suppress("DEPRECATION")
++                act.windowManager.defaultDisplay.rotation
++            }
++        } catch (e: Exception) {
++            -1
++        }
++    }
++
 +    @UsedByGodot
 +    fun isAppDebuggable(): Boolean {
 +        val info = activity?.applicationInfo ?: return false

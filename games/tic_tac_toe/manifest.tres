@@ -16,6 +16,7 @@ board_height = 0.12
 box_height = 0.4
 box_min_height = 0.12
 box_max_height = 0.9
+orientation = "either"
 entry = "res://games/tic_tac_toe/tic_tac_toe.tscn"
 version = "0.1.0"
 author = "Looking Glass"

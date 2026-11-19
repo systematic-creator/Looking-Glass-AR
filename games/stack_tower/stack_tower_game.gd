@@ -90,6 +90,7 @@ var _pulse: Node3D
 var _pulse_age: float = -1.0
 var _over_age: float = 0.0
 var _hud: CanvasLayer
+var _score_box: VBoxContainer
 var _score_label: Label
 var _info_label: Label
 var _over_panel: PanelContainer
@@ -726,6 +727,7 @@ func _build_hud() -> void:
 	top.offset_top = 18.0
 	top.alignment = BoxContainer.ALIGNMENT_BEGIN
 	_hud.add_child(top)
+	_score_box = top
 	_score_label = _hud_label(64, Holo.CYAN)
 	top.add_child(_score_label)
 	_info_label = _hud_label(24, Color(0.85, 0.95, 1.0))
@@ -778,6 +780,21 @@ func _build_hud() -> void:
 	_style_button(restart_button)
 	restart_button.pressed.connect(restart)
 	box.add_child(restart_button)
+	_layout_hud()
+
+
+## Portrait: the platform's status line spans the top beside "‹ Games", so
+## the score sits below it; the rest is anchored and fits a 720-wide screen.
+func _layout_hud() -> void:
+	if _score_box == null:
+		return
+	_score_box.offset_top = 112.0 if is_portrait() else 18.0
+	_score_box.offset_left = -300.0 if is_portrait() else -260.0
+	_score_box.offset_right = 300.0 if is_portrait() else 260.0
+
+
+func _on_orientation_changed(_portrait: bool) -> void:
+	_layout_hud()
 
 
 func _style_button(button: Button) -> void:

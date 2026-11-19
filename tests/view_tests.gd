@@ -14,6 +14,15 @@ extends LGTestSuite
 ## stretched video. The same check with the display set to the real screen
 ## aspect (what ARCore assumes by default: a centre crop) shows the swim the
 ## plugin fix removes, so the test can tell the two apart.
+##
+## Portrait (and any rotation but landscape) works differently: the plugin
+## gives ARCore the real rotation and window size, ARCore crops the rotated
+## image to the screen, and PassthroughBackground draws the texture with the
+## corner UVs ARCore reports. The portrait cases model that: a phone whose
+## sensor is mounted for landscape (texture u runs down the portrait screen,
+## v runs right-to-left), ARCore's centre-crop projection for a 1080x2340
+## display, and the shader's UV interpolation (PassthroughBackground.
+## texture_uv). Content must land on the video pixel and taps must hit.
 ## Run: godot --headless --path . res://tests/view_tests.tscn
 
 const SCREEN := Vector2(2340.0, 1080.0)
@@ -39,6 +48,7 @@ func run_tests() -> void:
 		_test_registration(texture)
 	_test_screen_ray_matches_video()
 	_view.queue_free()
+	await _test_portrait()
 	xr.uninstall()
 	await frames(1)
 
@@ -135,3 +145,110 @@ func _test_screen_ray_matches_video() -> void:
 			var hit: Variant = ScreenRay.hit_plane(_camera, video, Plane(Vector3.UP, 0.0))
 			worst = maxf(worst, INF if hit == null else (hit as Vector3).distance_to(world))
 	check("registration: a touch on a table point's video pixel hits that point (max %.1f mm)" % (worst * 1000.0), worst < 0.002)
+
+
+# --- Portrait ---------------------------------------------------------------------
+
+const PORTRAIT_SCREEN := Vector2(1080.0, 2340.0)
+
+
+## ARCore's fill crop of the rotated image (texture.y wide, texture.x tall)
+## onto the portrait screen: scale and the cropped offset (screen px).
+static func _portrait_crop(texture: Vector2) -> Array:
+	var s: float = maxf(PORTRAIT_SCREEN.x / texture.y, PORTRAIT_SCREEN.y / texture.x)
+	var offset := Vector2((texture.y * s - PORTRAIT_SCREEN.x) * 0.5, (texture.x * s - PORTRAIT_SCREEN.y) * 0.5)
+	return [s, offset]
+
+
+## Texture pixel (sensor frame) -> portrait screen pixel, as ARCore crops it.
+static func _portrait_screen_of_texture(px: Vector2, texture: Vector2) -> Vector2:
+	var crop: Array = _portrait_crop(texture)
+	var s: float = crop[0]
+	var offset: Vector2 = crop[1]
+	return Vector2((texture.y - px.y) * s - offset.x, px.x * s - offset.y)
+
+
+## The corner UVs the plugin would report (ArFrame_transformCoordinates2d,
+## NDC order: bottom-left, bottom-right, top-left, top-right).
+static func _portrait_corner_uvs(texture: Vector2) -> PackedVector2Array:
+	var crop: Array = _portrait_crop(texture)
+	var s: float = crop[0]
+	var offset: Vector2 = crop[1]
+	var out := PackedVector2Array()
+	for screen: Vector2 in [Vector2(0.0, PORTRAIT_SCREEN.y), PORTRAIT_SCREEN, Vector2.ZERO, Vector2(PORTRAIT_SCREEN.x, 0.0)]:
+		var u: float = (screen.y + offset.y) / s
+		var v: float = texture.y - (screen.x + offset.x) / s
+		out.append(Vector2(u / texture.x, v / texture.y))
+	return out
+
+
+## Display-oriented camera point (portrait: x right, y up on the screen) in
+## the sensor's landscape camera frame.
+static func _sensor_local(portrait_local: Vector3) -> Vector3:
+	return Vector3(-portrait_local.y, portrait_local.x, portrait_local.z)
+
+
+## ARCore's projection for the portrait display with that crop.
+static func _portrait_projection(texture: Vector2, focal: float, principal: Vector2) -> Projection:
+	var crop: Array = _portrait_crop(texture)
+	var s: float = crop[0]
+	var offset: Vector2 = crop[1]
+	var pp := Vector2((texture.y - principal.y) * s - offset.x, principal.x * s - offset.y)
+	return FakeXRInterface.arcore_projection(PORTRAIT_SCREEN, focal * s, pp)
+
+
+func _test_portrait() -> void:
+	var view := SubViewport.new()
+	view.size = Vector2i(PORTRAIT_SCREEN)
+	view.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child(view)
+	var origin := XROrigin3D.new()
+	view.add_child(origin)
+	var camera := XRCamera3D.new()
+	camera.near = 0.1
+	origin.add_child(camera)
+	await frames(1)
+	for texture: Vector2 in [Vector2(640, 480), Vector2(1920, 1080)]:
+		var focal: float = texture.x * 0.78
+		var principal: Vector2 = texture * 0.5 + Vector2(texture.x * 0.012, -texture.y * 0.009)
+		var corners: PackedVector2Array = _portrait_corner_uvs(texture)
+		xr.projection = _portrait_projection(texture, focal, principal)
+		var worst: float = 0.0
+		var stretched: float = 0.0
+		var ray_worst: float = 0.0
+		var seen: int = 0
+		for pose: Variant in _poses():
+			camera.global_transform = pose as Transform3D
+			for point: Variant in _table_points():
+				var world: Vector3 = point as Vector3
+				if camera.is_position_behind(world):
+					continue
+				var local: Vector3 = camera.global_transform.affine_inverse() * world
+				var tex_px: Vector2 = _texture_pixel(_sensor_local(local), focal, principal)
+				var video: Vector2 = _portrait_screen_of_texture(tex_px, texture)
+				if not Rect2(Vector2.ZERO, PORTRAIT_SCREEN).has_point(video):
+					continue
+				seen += 1
+				var rendered: Vector2 = camera.unproject_position(world)
+				# What the passthrough shader samples at the rendered pixel.
+				var sampled: Vector2 = PassthroughBackground.texture_uv(corners, rendered / PORTRAIT_SCREEN) * texture
+				var crop: Array = _portrait_crop(texture)
+				worst = maxf(worst, sampled.distance_to(tex_px) * float(crop[0]))
+				# Godot's own feed shader (landscape path) would stretch the
+				# unrotated texture over the portrait screen instead.
+				stretched = maxf(stretched, rendered.distance_to(tex_px / texture * PORTRAIT_SCREEN))
+				var hit: Variant = ScreenRay.hit_plane(camera, video, Plane(Vector3.UP, 0.0))
+				ray_worst = maxf(ray_worst, INF if hit == null else (hit as Vector3).distance_to(world))
+		check("portrait %dx%d: table points are on screen from the test poses (%d)" % [texture.x, texture.y, seen], seen >= 20)
+		check("portrait %dx%d texture on a 1080x2340 screen: content lands on the passthrough pixel (max %.2f px)" % [texture.x, texture.y, worst], worst < 1.0)
+		check("portrait %dx%d: the landscape feed path would be off by %.0f px (so the test can see a mismatch)" % [texture.x, texture.y, stretched], stretched > 100.0)
+		check("portrait %dx%d: a touch on a table point's video pixel hits it (max %.1f mm)" % [texture.x, texture.y, ray_worst * 1000.0], ray_worst < 0.002)
+	# Corner order: the shader's top-left corner shows the texture's u = 0
+	# edge (portrait top) and its right edge the v = 0 edge.
+	var c: PackedVector2Array = _portrait_corner_uvs(Vector2(640, 480))
+	var tl: Vector2 = PassthroughBackground.texture_uv(c, Vector2(0.0, 0.0))
+	var br: Vector2 = PassthroughBackground.texture_uv(c, Vector2(1.0, 1.0))
+	check("portrait: screen top-left samples the corner ARCore reports for NDC (-1, 1)", tl.is_equal_approx(c[2]))
+	check("portrait: screen bottom-right samples the corner for NDC (1, -1)", br.is_equal_approx(c[1]))
+	view.queue_free()
+	await frames(1)

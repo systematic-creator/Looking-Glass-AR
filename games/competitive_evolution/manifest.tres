@@ -16,6 +16,7 @@ board_height = 0.42
 box_height = 0.58
 box_min_height = 0.5
 box_max_height = 0.6
+orientation = "either"
 entry = "res://games/competitive_evolution/competitive_evolution.tscn"
 version = "0.0.1-placeholder"
 author = "Looking Glass"
