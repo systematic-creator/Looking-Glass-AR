@@ -8,6 +8,10 @@ extends Control
 signal game_chosen(id: StringName)
 
 const CARD_SIZE: Vector2 = Vector2(360.0, 300.0)
+## Landscape cards shrink to this before the grid wraps to a second row.
+const CARD_MIN_WIDTH: float = 260.0
+## Landscape cards: room for a 5-line description.
+const CARD_HEIGHT_LANDSCAPE: float = 340.0
 ## Portrait: one full-width card per row (capped), a little shorter.
 const CARD_HEIGHT_PORTRAIT: float = 300.0
 const CARD_MAX_WIDTH_PORTRAIT: float = 640.0
@@ -94,7 +98,13 @@ func apply_layout(p_portrait: bool) -> void:
 ## The card size for the current layout and viewport.
 func card_size() -> Vector2:
 	if not portrait:
-		return CARD_SIZE
+		# Narrower cards (down to CARD_MIN_WIDTH) so the catalog stays one row.
+		var n: int = maxi(cards.size(), 1)
+		var avail: float = get_viewport().get_visible_rect().size.x - 2.0 * MARGIN - 12.0
+		var w: float = (avail - 24.0 * float(n - 1)) / float(n)
+		w = clampf(w, CARD_MIN_WIDTH, CARD_SIZE.x)
+		# Narrow cards get taller so the description still shows.
+		return Vector2(w, CARD_HEIGHT_LANDSCAPE + (CARD_SIZE.x - w) * 0.8)
 	var width: float = get_viewport().get_visible_rect().size.x - 2.0 * MARGIN_PORTRAIT - 12.0
 	return Vector2(clampf(width, CARD_SIZE.x, CARD_MAX_WIDTH_PORTRAIT), CARD_HEIGHT_PORTRAIT)
 
@@ -121,6 +131,9 @@ func refresh() -> void:
 		_grid.add_child(card)
 		cards[manifest.id] = card
 	_empty_label.visible = games.is_empty()
+	var size: Vector2 = card_size()
+	for card: Variant in cards.values():
+		(card as Control).custom_minimum_size = size
 
 
 func choose(id: StringName) -> void:
