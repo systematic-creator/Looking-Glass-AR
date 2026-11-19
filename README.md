@@ -11,9 +11,11 @@ goal: players in the same room share one anchored board, and each sees it
 from their own phone's position.
 
 **Status:** early. The platform layer (ARCore, calibration, anchoring), the
-game contract, the launcher, and three games are in place. *Tic-Tac-Toe* is a
+game contract, the launcher, and four games are in place. *Tic-Tac-Toe* is a
 sample that proves the contract. *Stack Tower* is a one-player timing game in
-a tall simulation box. *Competitive Evolution* is a placeholder
+a tall simulation box. *Mage Run* is a three-lane endless runner on a
+storybook diorama with two hologram "arcane rows" above the road (first
+playable, silent). *Competitive Evolution* is a placeholder
 board; the full game lives in
 [Competitive-evolution-AGR](https://github.com/Systematic-creator/Competitive-evolution-AGR)
 and is on hiatus until it gets imported here.
@@ -58,7 +60,7 @@ games/
   tic_tac_toe/            sample game (hologram board)
   stack_tower/            timing game in a tall box
   competitive_evolution/  placeholder adapter
-  mage_run/               planned runner (design: docs/mage-run.md)
+  mage_run/               endless runner, first playable (design: docs/mage-run.md)
 addons/ARCorePlugin/      Android export plugin (binaries are built, not committed)
 tools/arcore_plugin/      ARCore plugin build script + patch
 tests/                    headless test suites
@@ -445,6 +447,26 @@ layers read separately. The sliding slab gets an emission lift and a bright
 outline, and solid debris shrinks away instead of fading. Game UI buttons
 are not board touches (`LGGame.is_over_game_ui(screen)`).
 
+**Mage Run** (`games/mage_run/`, `tall_box`, `orientation = "either"`, best
+upright) is a medieval endless runner on a 30 x 60 cm board with a 40 cm
+airspace (adjustable to 70 cm). A wizard in a blue robe and starry hat runs
+toward a castle while the road scrolls under him; carts, crate stacks,
+fences, banner beams and royal carriages emerge from the castle's portal
+gate and shrink away at the near edge, so nothing leaves the box. Swipes
+(the platform's `captures_swipes()` / `_on_swipe`): left / right change lane,
+up jumps (and climbs onto an arcane row), down slides, drops a row or slams
+down mid-air; swipes are buffered 0.15 s and there is 0.08 s of coyote
+grace. Two translucent cyan hologram rows of 3 lanes each unlock at 150 m
+and 400 m, with ramps, jump-up tiles and (from 800 m) cracked tiles that
+crumble; their coins count x2 and x3. Speed rises from 1.2 to 2.6 run m/s.
+Chunks come from 19 hand-made templates; a seeded generator only uses a
+chunk if the validator finds a safe path into and through it. Coins fill the
+staff meter; a double tap or the staff button casts Shield, Magnet or
+Levitation in turn. Turning the phone (or Pause) pauses, and Resume counts
+down 3-2-1. Score = distance x multiplier (x1-x5 from coin streaks) + coins;
+the best of the session is kept. No audio yet. Design and status:
+[docs/mage-run.md](docs/mage-run.md).
+
 Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
 50-60 cm) and keeps its label under the top.
 
@@ -557,7 +579,19 @@ and anchor unmoved, cell taps exact before / after the turn and after a
 180-degree flip, landscape-only plugin builds lock to landscape),
 `swipe_tests` (swipe thresholds in inches at several DPIs and in portrait,
 dominant axis, fire on threshold, slow strokes, S-strokes, taps, two
-fingers, the input buffer, routing through GameHost). `view_tests` also
+fingers, the input buffer, routing through GameHost), `mage_run_tests`
+(Mage Run: units and unlock distances, the manifest and box, lane changes,
+reverse and edge bumps, jump height and time, the input buffer and coyote
+grace, slide / slam / drop, each obstacle's one answer, carts rolling out of
+the gate, carriage roofs, stumbles and the second-stumble crash, arcane rows
+(landing on a tile, row lanes, Arcane II, x2 / x3 coins, running off the
+end), cracked tiles and ramps, scoring and multipliers, staff power-ups, all
+templates fair, the validator rejecting unfair shapes, 2 x 1000 m of
+generated track checked chunk by chunk and join by join, swipes through the
+host, the lane flip seen from the castle end, pause by button / rotation /
+app with the countdown, game over / restart / session best, the first-run
+hint, the HUD in portrait and landscape, everything inside the box, and the
+triangle budget). `view_tests` also
 covers portrait (ARCore's rotated centre crop drawn by the passthrough
 shader, content and taps registered).
 Leaked-RID messages at exit are harmless.

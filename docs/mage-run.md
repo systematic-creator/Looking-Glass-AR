@@ -1,6 +1,9 @@
 # Mage Run: design doc
 
-Status: **pre-production**. No Mage Run game code yet. This document is the
+Status: **first playable (silent) on the `mage-run` branch**: milestones
+M4-M6 plus a first art pass and the staff power-ups are in
+`games/mage_run/` (see [section 11](#11-implementation-milestones) and
+[11.1](#111-first-playable-as-built)). This document is the
 plan for a medieval fantasy three-lane endless runner on the Looking Glass
 platform, plus the platform work it needs. That platform work (milestones
 M1-M3: per-game screen orientation, smooth rotation, ARCore in portrait,
@@ -85,11 +88,13 @@ Pillars:
 - Manifest uses **`tall_box = true`**: the cap is `min(3.0 m, 4 x long side)`
   = 2.4 m for a 0.6 m board. Mage Run does not need that much; it wants
   headroom for the 2 arcane rows and jump arcs.
-- **Suggested airspace: `box_height` 0.40 m, `box_min_height` 0.30 m,
-  `box_max_height` 0.70 m.** Rows sit at fixed fractions of the default
+- **Airspace: `box_height` 0.40 m, `box_min_height` 0.40 m,
+  `box_max_height` 0.70 m** (as built: the minimum is 0.40 m because a jump
+  from Arcane II with the hat on reaches 0.20 + 0.11 + 0.072 m above the
+  0.008 m base). Rows sit at fixed fractions of the default
   layout (see section 3), so a lower box only trims the sky above the top row
   (the castle top, particles).
-- `board_height` about 0.35 m (camera framing in "Play without AR").
+- `board_height` 0.25 m (camera framing in "Play without AR").
 - `box_outline_while_playing()` returns about **0.15** (at most a faint
   outline; the brief asks for at most that).
 
@@ -350,10 +355,13 @@ meter, as in Subway Surfers.
 ### World scale vs board scale
 
 The gameplay world is measured in "run metres", and the board shows a
-window onto it. Proposal: **1 run metre = 0.25 m of board depth** at
-placement scale 1. The 0.6 m board then shows 2.4 run metres, and the
-speed numbers above are in run metres per second. This keeps reaction
-distance fair without a huge board (see open questions).
+window onto it. **As built: 1 run metre = 0.16 m of board depth** at
+placement scale 1 (`MageTrack.RUN_TO_BOARD`; the first proposal was 0.25).
+Items emerge from the castle gate (z -0.19) and the wizard runs at
+z +0.175, so 2.28 run metres are visible ahead: at the 2.6 m/s top speed
+with a cart rolling at 0.4 m/s that is 0.76 s, just over the 0.75 s
+reaction rule (a unit test checks it). The speed numbers above are in run
+metres per second.
 
 ---
 
@@ -630,13 +638,42 @@ Headless tests cannot run ARCore or the GPU path, so on a phone check:
 | **M1** | Platform: orientation in the manifest (default `either`), GameHost apply / restore, full-sensor project default, base-canvas swap + UI fade, HUD re-layout (platform, Tic-Tac-Toe, Stack Tower, launcher), `orientation_changed` hook, `orientation_tests` | Existing games unchanged in landscape and laid out in portrait; a probe game rotates and keeps its anchor | **Done** on `mage-run` (headless); device check 10.6 |
 | **M2** | Platform: ARCore display rotation (plugin patch), portrait passthrough, registration, `view_tests` portrait | Taps land on the right cell in portrait AR (field test) | **Done** on `mage-run` (headless); field test pending |
 | **M3** | Platform: `SwipeDetector` + `captures_swipes()` / `_on_swipe`, `SwipeBuffer`, `swipe_tests` | Swipes at 160 / 420 dpi pass | **Done** on `mage-run` |
-| **M4** | Mage Run greybox: board, box, treadmill, 3 ground lanes, lane change / jump / slide with buffering, boxes for obstacles, collision, game over / restart, score, rotation pause + countdown | Playable on the phone, best in portrait | Next |
-| **M5** | Chunks + validator + seeded generator, difficulty curve, coin lines | Validator proves a safe path for every template | |
-| **M6** | Arcane rows (2 rows x 3 lanes): tiles, ramps, jump-to-row, drop, collapsing tiles, row coin multipliers | Rows unlock at the distance thresholds | |
-| **M7** | Art pass: procedural wizard, props, road, castle, sparkle trail, dissolve; budget check on device | <= 120 draw calls, 60 fps on the target phone | |
-| **M8** | Staff meter + power-ups, HUD (coins, score, pause, staff, arcane row indicator), Hologram / Solid world toggle | **First playable** (silent) | |
+| **M4** | Mage Run greybox: board, box, treadmill, 3 ground lanes, lane change / jump / slide with buffering, boxes for obstacles, collision, game over / restart, score, rotation pause + countdown | Playable on the phone, best in portrait | **Done** on `mage-run` (headless; device check pending) |
+| **M5** | Chunks + validator + seeded generator, difficulty curve, coin lines | Validator proves a safe path for every template | **Done** (19 templates; 2 x 1000 m generated per test run) |
+| **M6** | Arcane rows (2 rows x 3 lanes): tiles, ramps, jump-to-row, drop, collapsing tiles, row coin multipliers | Rows unlock at the distance thresholds | **Done** |
+| **M7** | Art pass: procedural wizard, props, road, castle, sparkle trail, dissolve; budget check on device | <= 120 draw calls, 60 fps on the target phone | **First pass done** (about 50 draw calls, 5-7k triangles in desktop captures); device fps pending |
+| **M8** | Staff meter + power-ups, HUD (coins, score, pause, staff, arcane row indicator), Hologram / Solid world toggle | **First playable** (silent) | **Mostly done**: meter, Shield / Magnet / Levitation, HUD in both orientations; the Hologram / Solid world toggle is deferred |
 | **M9** | Audio helper + SFX / music (CC0) | | Later: out of scope for the first playable |
 | **M10** | Polish, tuning, release build, field test | | |
+
+### 11.1 First playable as built
+
+- **Code:** `games/mage_run/`: `mage_run_game.gd` (the `LGGame`: visuals,
+  HUD, flow), `scripts/mage_track.gd` (units, item types, physics
+  constants), `mage_run_sim.gd` (the run, no nodes), `mage_chunks.gd`
+  (19 templates), `mage_validator.gd` (safe-path search + shape rules),
+  `mage_generator.gd` (seeded, validated chunks, optional worker thread),
+  `mage_props.gd` (every model in code), `shaders/` (arcane tiles, gate
+  portal, scrolling road, blob shadow).
+- **Fairness:** the sim and the validator share one physics model (exact
+  jump parabola, so the same 11 cm apex at any frame rate). Every chunk is
+  validated with the previous one from the previous chunk's possible lanes;
+  rejects fall back to a breather. Each obstacle has one vertical answer
+  (fence: jump, beam: slide; crates, carts and carriages: change lane), the
+  roof of a carriage is walkable but the validator never relies on it.
+- **Containment:** items are created hidden inside the closed castle and
+  emerge through the opaque portal; at the near end they shrink to nothing
+  over the last 3 cm. `mage_run_tests` asserts every prop, tile, coin, the
+  wizard and the scenery stay inside `PlayBox.contains()`.
+- **Flow:** 3-2-1 countdown at start and on every resume; the Pause
+  button, a phone turn and the app pausing all pause; game over shows the
+  score and session best with "Run again". Double tap or the staff button
+  casts.
+- **Deferred:** the Hologram / Solid world toggle (the world is always
+  solid, the arcane rows always hologram), audio (M9), all-time best and coin
+  persistence (session best only), field pickups, cosmetics, a shared
+  `HoloStyle` refactor, and the device checks (fps, swipe feel, AR in
+  portrait with this game).
 
 ---
 
@@ -653,7 +690,8 @@ Headless tests cannot run ARCore or the GPU path, so on a phone check:
 
 ### Still open
 
-2. **World scale**: is 1 run metre = 0.25 m of board depth right? Real
+2. **World scale** (answered for now by the build: 0.16 m per run metre,
+   see section 6). Earlier question: is 1 run metre = 0.25 m right? Real
    Subway Surfers reaction distances need a long visible road; on a 60 cm
    diorama the far end is only about 2.4 run metres away. Options: a longer
    board (0.3 x 0.9 m), compressed perspective toward the castle, or slower
