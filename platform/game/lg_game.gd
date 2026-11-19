@@ -32,6 +32,8 @@ extends Node3D
 ## Points are Vector3 in board space with y = 0. The platform finds them by
 ## casting the finger's ray onto the plane y = board_surface_height(), so a
 ## raised board (a slab, a table top) takes taps where the player sees its top.
+## Game UI: a game may add its own CanvasLayer controls; return true from
+## is_over_game_ui(screen) for points on them so they are not board touches.
 ##
 ## Play volume ("simulation box"): get_box() is a PlayBox in board space:
 ## floor y = 0 on the chosen surface, footprint = manifest.board_size, height
@@ -126,6 +128,11 @@ func box_outline_while_playing() -> float:
 ## the top of a raised board. Taps are projected onto this plane.
 func board_surface_height() -> float:
 	return 0.0
+
+
+## True if a screen point is on this game's own UI (not a board touch).
+func is_over_game_ui(_screen: Vector2) -> bool:
+	return false
 
 
 ## Board-space height the "Play without AR" camera should keep centred (e.g.

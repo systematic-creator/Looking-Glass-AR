@@ -10,6 +10,7 @@ const DT: float = 1.0 / 60.0
 
 func run_tests() -> void:
 	StackTowerGame.session_best = 0
+	StackTowerGame.session_style = StackTowerGame.Style.HOLOGRAM
 	_test_slice_math()
 	_test_manifest_and_box()
 	await _test_start_and_sweep()
@@ -19,6 +20,8 @@ func run_tests() -> void:
 	await _test_scroll_keeps_inside_box()
 	await _test_camera_follows_top()
 	await _test_ar_tap_anywhere()
+	await _test_solid_style()
+	StackTowerGame.session_style = StackTowerGame.Style.HOLOGRAM
 	StackTowerGame.session_best = 0
 	ARSession.clear_saved_area()
 
@@ -311,4 +314,102 @@ func _test_ar_tap_anywhere() -> void:
 	for i: int in 30:
 		host._process(DT)
 	check("AR: the touch-camera focus is ignored in AR", host.orbit_camera.position.is_equal_approx(orbit_before))
+	await free_host(host)
+
+
+func _is_solid(node: MeshInstance3D) -> bool:
+	var mat: StandardMaterial3D = node.material_override as StandardMaterial3D
+	var hull: MeshInstance3D = node.get_node_or_null(^"Outline") as MeshInstance3D
+	return (
+		mat != null and mat.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and mat.shading_mode == BaseMaterial3D.SHADING_MODE_PER_PIXEL
+		and mat.blend_mode == BaseMaterial3D.BLEND_MODE_MIX and is_equal_approx(mat.albedo_color.a, 1.0)
+		and hull != null and (hull.material_override as StandardMaterial3D).cull_mode == BaseMaterial3D.CULL_FRONT
+		and ((hull.mesh as BoxMesh).size.x > (node.mesh as BoxMesh).size.x)
+	)
+
+
+func _test_solid_style() -> void:
+	StackTowerGame.session_best = 0
+	StackTowerGame.session_style = StackTowerGame.Style.HOLOGRAM
+	var host: GameHost = await make_host(&"stack_tower")
+	var game: StackTowerGame = _game(host)
+	check("style: Hologram is the default (see-through Holo shader, edges on the slab)", (
+		game.style == StackTowerGame.Style.HOLOGRAM and game.layers[0]["node"].material_override is ShaderMaterial
+		and (game.active["node"] as Node).get_node(^"Edges").visible and game.style_button.text == "Style: Hologram"
+	))
+	for o: float in [0.02, 0.0, -0.01]:
+		_aim(game, o)
+		game.place()
+	_aim(game, 0.03)
+	game.place()
+	var score_before: int = game.score
+	var layers_before: int = game.layers.size()
+	var phase_before: float = float(game.active["phase"])
+	# Tap the Style button through the host, like a finger.
+	var button_centre: Vector2 = game.style_button.get_global_rect().get_center()
+	check("style: the HUD button is game UI (not a board touch)", game.is_over_game_ui(button_centre) and host.is_over_platform_ui(button_centre))
+	_tap(button_centre)
+	await frames(1)
+	check("style: a finger on the Style button never reaches the board", game.layers.size() == layers_before and game.score == score_before)
+	# (Headless pushed touches skip touch-to-mouse emulation, so press it here.)
+	game.style_button.pressed.emit()
+	await frames(1)
+	check("style: tapping Style switches to Solid mid-game without dropping a slab or restarting", (
+		game.style == StackTowerGame.Style.SOLID and game.layers.size() == layers_before and game.score == score_before
+		and float(game.active["phase"]) >= phase_before and game.style_button.text == "Style: Solid"
+	))
+	var all_solid: bool = true
+	var colours_kept: bool = true
+	for layer: Dictionary in game.layers:
+		var node: MeshInstance3D = layer["node"]
+		all_solid = all_solid and _is_solid(node)
+		var c: Color = (node.material_override as StandardMaterial3D).albedo_color
+		colours_kept = colours_kept and Color(c.r, c.g, c.b).is_equal_approx(StackTowerGame.layer_color(int(layer["level"])))
+	check("solid: every layer is an opaque, lit block with an outline (inverted hull)", all_solid)
+	check("solid: layers keep the per-layer gradient colours", colours_kept)
+	var layer_outline: Color = ((game.layers.back()["node"] as Node).get_node(^"Outline").material_override as StandardMaterial3D).albedo_color
+	check("solid: layer outlines are a darker shade of the layer colour", layer_outline.get_luminance() < StackTowerGame.layer_color(4).get_luminance() * 0.5)
+	var active: MeshInstance3D = game.active["node"]
+	var active_mat: StandardMaterial3D = active.material_override as StandardMaterial3D
+	var top_mat: StandardMaterial3D = (game.layers.back()["node"] as MeshInstance3D).material_override as StandardMaterial3D
+	var active_outline: Color = (active.get_node(^"Outline").material_override as StandardMaterial3D).albedo_color
+	check("solid: the sliding slab stands out: solid, emission lift, bright outline, no hologram edges", (
+		_is_solid(active) and active_mat.emission_energy_multiplier > top_mat.emission_energy_multiplier + 0.3
+		and active_outline.get_luminance() > 0.9 and not active.get_node(^"Edges").visible
+	))
+	check("solid: no additive / see-through ghosting on the tower", (
+		game.debris.size() >= 1 and _is_solid(game.debris.back()["node"]) and active_mat.blend_mode == BaseMaterial3D.BLEND_MODE_MIX
+	))
+	var piece: Dictionary = game.debris.back()
+	var inside: bool = true
+	for i: int in 30:
+		game._process(DT)
+		inside = inside and game.node_in_box(piece["node"])
+	check("solid: debris shrinks away instead of fading, inside the box", (
+		inside and (piece["node"] as MeshInstance3D).scale.x < 0.95 and is_equal_approx(((piece["node"] as MeshInstance3D).material_override as StandardMaterial3D).albedo_color.a, 1.0)
+	))
+	_aim(game, 0.0)
+	game.place()
+	var perfect_node: MeshInstance3D = game.layers.back()["node"]
+	check("solid: a perfect still pulses (emission flash) and splashes", game.pulse() != null and game.get_flash(perfect_node) > 1.0 and _is_solid(perfect_node))
+	_step(game, 0.6)
+	check("solid: the flash settles back to a plain block", is_equal_approx((perfect_node.material_override as StandardMaterial3D).emission_energy_multiplier, 0.0))
+	check("solid: new layers and slabs come out solid", _is_solid(perfect_node) and _is_solid(game.active["node"]))
+	check("style: the choice is remembered for the session", StackTowerGame.session_style == StackTowerGame.Style.SOLID)
+	await free_host(host)
+	host = await make_host(&"stack_tower")
+	game = _game(host)
+	check("style: re-opening the game starts in Solid", game.style == StackTowerGame.Style.SOLID and _is_solid(game.layers[0]["node"]) and _is_solid(game.active["node"]))
+	var top_size: Vector2 = game.layers.back()["size"]
+	_aim(game, top_size[int(game.active["axis"])] + 0.01)
+	game.place()
+	game.restart_button.pressed.emit()
+	await frames(1)
+	check("style: Restart keeps the style", game.style == StackTowerGame.Style.SOLID and _is_solid(game.layers[0]["node"]))
+	game.toggle_style()
+	var back: bool = game.layers[0]["node"].material_override is ShaderMaterial and (game.layers[0]["node"] as Node).get_node_or_null(^"Outline") == null
+	check("style: toggling back gives Hologram again (outlines removed, edges back)", (
+		back and game.style == StackTowerGame.Style.HOLOGRAM and (game.active["node"] as Node).get_node(^"Edges").visible
+		and StackTowerGame.session_style == StackTowerGame.Style.HOLOGRAM
+	))
 	await free_host(host)

@@ -277,6 +277,8 @@ func is_over_platform_ui(screen: Vector2) -> bool:
 		return true
 	if debug_button != null and debug_button.visible and debug_button.get_global_rect().has_point(screen):
 		return true
+	if game != null and game.is_over_game_ui(screen):
+		return true
 	return session != null and session.hud != null and session.hud.is_over_ui(screen)
 
 

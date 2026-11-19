@@ -328,6 +328,10 @@ as usual. `validate()` rejects tall-box heights over 3.0 m.
 | `_on_box_changed(box: PlayBox)` | The player changed the airspace height (after `_on_board_ready`; also the `box_changed` signal). Re-fit anything tied to the top. |
 | `_on_exit()` | Player is leaving the game. Save here. |
 
+**Game UI:** a game may add its own CanvasLayer controls; return true from
+`is_over_game_ui(screen) -> bool` for points on them so they are not board
+touches.
+
 **Touch-camera focus:** override `view_focus_height() -> float` (board space)
 to have the "Play without AR" camera ease its orbit centre to that height,
 e.g. the top of a growing tower (Stack Tower). The default (-1) keeps the
@@ -396,7 +400,15 @@ always leaving two free layers under the lid, so play never ends for height
 and never leaves the box. Layers that sink into the pedestal are freed. The
 HUD shows score, height, session best and the perfect streak; a Game over
 panel has Restart (a tap anywhere also restarts after 0.6 s). Outside AR the
-touch camera follows the tower top.
+touch camera follows the tower top. A **Style** button (bottom left)
+switches between **Hologram** (the default see-through glow) and **Solid**
+at any time without restarting; the choice is kept for the app session.
+Solid draws every layer, the sliding slab and the debris as opaque, lit
+blocks in the same gradient colours, each with a dark outline (an inverted
+hull: the back faces of a slightly larger box, gl_compatibility safe) so
+layers read separately. The sliding slab gets an emission lift and a bright
+outline, and solid debris shrinks away instead of fading. Game UI buttons
+are not board touches (`LGGame.is_over_game_ui(screen)`).
 
 Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
 50-60 cm) and keeps its label under the top.
@@ -499,7 +511,8 @@ resume / re-place / sessions, outline levels, tap rays, the games' boxes),
 `stack_tests` (Stack Tower: slicing maths, perfect tolerance, streak bonus
 and regrow, miss / game over / restart, scoring and session best, sweep
 speed, tap-anywhere, debris and sliding slabs inside the box, the tower
-sinking under the lid, the touch camera following the top).
+sinking under the lid, the touch camera following the top, the Hologram /
+Solid style toggle).
 Leaked-RID messages at exit are harmless.
 
 ## Android build

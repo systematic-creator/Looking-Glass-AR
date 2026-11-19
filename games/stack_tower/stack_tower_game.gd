@@ -13,6 +13,11 @@ extends LGGame
 ##
 ## Every size is relative to unit() (the board's shorter side), so the game
 ## plays the same on a table or, scaled up, on the floor.
+##
+## Two looks (the HUD's Style button, switchable mid-game, remembered for the
+## app session): Hologram (see-through Holo glow, the default) and Solid
+## (opaque, lit blocks in the same gradient colours with a dark outline per
+## layer; the sliding slab is lifted with emission and a bright outline).
 
 ## Base slab: this fraction of the board's short side, square.
 const BASE_RATIO: float = 0.65
@@ -51,11 +56,21 @@ const RESTART_DELAY: float = 0.6
 const OUTLINE_WHILE_PLAYING: float = 0.35
 
 enum State { PLAYING, OVER }
+enum Style { HOLOGRAM, SOLID }
+
+## Solid look: outline thickness (/ unit), the sliding slab's emission lift,
+## debris shrinks to this scale instead of fading.
+const OUTLINE_RATIO: float = 0.005
+const ACTIVE_LIFT: float = 0.45
+const DEBRIS_END_SCALE: float = 0.3
 
 ## Best score of this app session (survives restarts and re-launches).
 static var session_best: int = 0
+## Look picked for this app session.
+static var session_style: Style = Style.HOLOGRAM
 
 var state: State = State.PLAYING
+var style: Style = Style.HOLOGRAM
 var score: int = 0
 var streak: int = 0
 var best_streak: int = 0
@@ -80,6 +95,7 @@ var _info_label: Label
 var _over_panel: PanelContainer
 var _over_label: Label
 var restart_button: Button
+var style_button: Button
 
 
 # --- Geometry -------------------------------------------------------------------
@@ -204,6 +220,7 @@ func _on_board_ready() -> void:
 	_tower = Node3D.new()
 	_tower.name = "Tower"
 	add_child(_tower)
+	style = session_style
 	_build_hud()
 	restart()
 
@@ -336,7 +353,7 @@ func _keep_on_board(center: Vector2, size: Vector2) -> Vector2:
 
 func _add_layer(center: Vector2, size: Vector2, level: int) -> Dictionary:
 	var color: Color = layer_color(level)
-	var node := _slab_node(size, color, 0.1)
+	var node := _slab_node(size, color, &"layer")
 	node.name = "Layer%d" % level
 	node.position = Vector3(center.x, level_bottom(level) + layer_height() * 0.5, center.y)
 	_tower.add_child(node)
@@ -351,9 +368,13 @@ func _spawn_active() -> void:
 	var axis: int = (level + 1) % 2
 	var size: Vector2 = top["size"]
 	var color: Color = layer_color(level)
-	var node := _slab_node(size, color, 0.26, 1.1)
+	var node := _slab_node(size, color, &"active")
 	node.name = "Active"
-	_add_edges(node, size, color)
+	var edges := Node3D.new()
+	edges.name = "Edges"
+	edges.visible = style == Style.HOLOGRAM
+	node.add_child(edges)
+	_add_edges(edges, size, color)
 	_tower.add_child(node)
 	active = {
 		"center": top["center"], "size": size, "axis": axis, "dir": 1.0 if level % 2 == 1 else -1.0,
@@ -383,14 +404,127 @@ func sweep_speed() -> float:
 	return 2.0 * sweep_reach(active["size"], axis) / sweep_time(int(active["level"]))
 
 
-func _slab_node(size: Vector2, color: Color, fill: float, rim: float = 0.65) -> MeshInstance3D:
+## A slab block; `role` is &"layer", &"active" or &"debris" (sets the look).
+func _slab_node(size: Vector2, color: Color, role: StringName) -> MeshInstance3D:
 	var mesh := BoxMesh.new()
 	mesh.size = Vector3(size.x, layer_height() * 0.94, size.y)
 	var node := MeshInstance3D.new()
 	node.mesh = mesh
-	node.material_override = Holo.material(color, fill, rim, 1.0)
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	node.set_meta("role", role)
+	node.set_meta("color", color)
+	_apply_look(node)
 	return node
+
+
+## Hologram material for a role (see-through glow).
+static func holo_material(color: Color, role: StringName) -> ShaderMaterial:
+	match role:
+		&"active":
+			return Holo.material(color, 0.26, 1.1, 1.0)
+		&"debris":
+			return Holo.material(color, 0.2, 0.9, 1.0)
+	return Holo.material(color, 0.1, 0.65, 1.0)
+
+
+## Solid material: opaque, lit (the host's sun + ambient), gradient colour.
+## The sliding slab gets an emission lift so it stands out from the top.
+static func solid_material(color: Color, role: StringName) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(color.r, color.g, color.b, 1.0)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	mat.roughness = 0.6
+	mat.metallic = 0.0
+	mat.emission_enabled = true
+	mat.emission = Color(color.r, color.g, color.b)
+	mat.emission_energy_multiplier = ACTIVE_LIFT if role == &"active" else 0.0
+	return mat
+
+
+## Dark (bright for the sliding slab) outline: the back faces of a slightly
+## larger box, unshaded. Plain inverted hull, gl_compatibility safe.
+static func outline_material(color: Color, role: StringName) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_FRONT
+	mat.albedo_color = Color(1.0, 1.0, 0.92) if role == &"active" else Color(color.darkened(0.72), 1.0)
+	return mat
+
+
+## (Re)apply the current style to a slab made by _slab_node.
+func _apply_look(node: MeshInstance3D) -> void:
+	var role: StringName = node.get_meta("role", &"layer")
+	var color: Color = node.get_meta("color", Holo.CYAN)
+	var outline: Node = node.get_node_or_null(^"Outline")
+	if outline != null:
+		node.remove_child(outline)
+		outline.queue_free()
+	var edges: Node3D = node.get_node_or_null(^"Edges") as Node3D
+	if style == Style.SOLID:
+		node.material_override = solid_material(color, role)
+		var hull := MeshInstance3D.new()
+		hull.name = "Outline"
+		var grow: float = unit() * OUTLINE_RATIO * (1.5 if role == &"active" else 1.0)
+		var mesh := BoxMesh.new()
+		mesh.size = (node.mesh as BoxMesh).size + Vector3(grow, grow, grow) * 2.0
+		hull.mesh = mesh
+		hull.material_override = outline_material(color, role)
+		hull.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		node.add_child(hull)
+	else:
+		node.material_override = holo_material(color, role)
+	if edges != null:
+		edges.visible = style == Style.HOLOGRAM
+
+
+## Switch Hologram / Solid; restyles the whole tower in place (no restart).
+func set_style(p_style: Style) -> void:
+	style = p_style
+	session_style = p_style
+	for layer: Dictionary in layers:
+		var node: Variant = layer.get("node")
+		if node is MeshInstance3D and is_instance_valid(node):
+			_apply_look(node as MeshInstance3D)
+	if not active.is_empty():
+		_apply_look(active["node"] as MeshInstance3D)
+	for piece: Dictionary in debris:
+		_apply_look(piece["node"] as MeshInstance3D)
+		_fade_debris(piece)
+	_refresh_hud()
+
+
+func toggle_style() -> void:
+	set_style(Style.SOLID if style == Style.HOLOGRAM else Style.HOLOGRAM)
+
+
+## Perfect flash on a slab: the Holo flash, or an emission burst when solid.
+func set_flash(node: MeshInstance3D, amount: float) -> void:
+	var mat: Material = node.material_override
+	if mat is ShaderMaterial:
+		(mat as ShaderMaterial).set_shader_parameter("flash", amount)
+	elif mat is StandardMaterial3D:
+		var lift: float = ACTIVE_LIFT if node.get_meta("role", &"layer") == &"active" else 0.0
+		(mat as StandardMaterial3D).emission_energy_multiplier = lift + amount * 0.9
+
+
+func get_flash(node: MeshInstance3D) -> float:
+	var mat: Material = node.material_override
+	if mat is ShaderMaterial:
+		return float((mat as ShaderMaterial).get_shader_parameter("flash"))
+	return (mat as StandardMaterial3D).emission_energy_multiplier / 0.9
+
+
+## Hologram debris fades; solid debris (opaque) shrinks away instead.
+func _fade_debris(piece: Dictionary) -> void:
+	var node: MeshInstance3D = piece["node"]
+	var t: float = clampf(float(piece["age"]) / DEBRIS_TIME, 0.0, 1.0)
+	var mat: Material = node.material_override
+	if mat is ShaderMaterial:
+		(mat as ShaderMaterial).set_shader_parameter("intensity", 1.0 - t)
+		node.scale = Vector3.ONE
+	else:
+		node.scale = Vector3.ONE * lerpf(1.0, DEBRIS_END_SCALE, t * t)
 
 
 ## Glowing top edges (the sliding slab and the pedestal).
@@ -420,14 +554,14 @@ func _build_pedestal() -> void:
 
 
 func _add_debris(center: Vector2, size: Vector2, level: int, color: Color, axis: int, outward: float) -> void:
-	var node := _slab_node(size, color, 0.2, 0.9)
+	var node := _slab_node(size, color, &"debris")
 	node.name = "Debris%d" % level
 	node.position = Vector3(center.x, level_bottom(level) + layer_height() * 0.5, center.y)
 	_tower.add_child(node)
 	var push := Vector3.ZERO
 	push[0 if axis == 0 else 2] = (outward if outward != 0.0 else 1.0) * unit() * 0.5
 	var spin_axis: Vector3 = Vector3(0, 0, -1) if axis == 0 else Vector3(1, 0, 0)
-	debris.append({"node": node, "velocity": push, "spin": spin_axis * (outward if outward != 0.0 else 1.0) * 3.2, "age": 0.0})
+	debris.append({"node": node, "velocity": push, "spin": spin_axis * (outward if outward != 0.0 else 1.0) * 3.2, "age": 0.0, "color": color})
 	_contain(node)
 
 
@@ -454,8 +588,7 @@ func _update_debris(delta: float) -> void:
 		if pushed.z != 0.0:
 			v.z = 0.0
 		piece["velocity"] = v
-		var fade: float = clampf(1.0 - float(piece["age"]) / DEBRIS_TIME, 0.0, 1.0)
-		(node.material_override as ShaderMaterial).set_shader_parameter("intensity", fade)
+		_fade_debris(piece)
 		if float(piece["age"]) >= DEBRIS_TIME:
 			node.queue_free()
 			debris.remove_at(i)
@@ -515,7 +648,7 @@ func _update_scroll(delta: float, snap: bool) -> void:
 func _start_pulse(layer: Dictionary) -> void:
 	_end_pulse()
 	var node: MeshInstance3D = layer["node"]
-	(node.material_override as ShaderMaterial).set_shader_parameter("flash", 1.2)
+	set_flash(node, 1.2)
 	_pulse = Node3D.new()
 	_pulse.name = "PerfectPulse"
 	_pulse.position = node.position
@@ -539,7 +672,7 @@ func _update_pulse(delta: float) -> void:
 	Holo.set_param(_pulse, &"intensity", 1.6 * (1.0 - t))
 	var layer_node: Node = _pulse.get_meta("layer")
 	if is_instance_valid(layer_node):
-		((layer_node as MeshInstance3D).material_override as ShaderMaterial).set_shader_parameter("flash", 1.2 * (1.0 - t))
+		set_flash(layer_node as MeshInstance3D, 1.2 * (1.0 - t))
 	if t >= 1.0:
 		_end_pulse()
 
@@ -550,7 +683,7 @@ func _end_pulse() -> void:
 		return
 	var layer_node: Node = _pulse.get_meta("layer")
 	if is_instance_valid(layer_node):
-		((layer_node as MeshInstance3D).material_override as ShaderMaterial).set_shader_parameter("flash", 0.0)
+		set_flash(layer_node as MeshInstance3D, 0.0)
 	_pulse.queue_free()
 	_pulse = null
 	_pulse_age = -1.0
@@ -597,6 +730,18 @@ func _build_hud() -> void:
 	top.add_child(_score_label)
 	_info_label = _hud_label(24, Color(0.85, 0.95, 1.0))
 	top.add_child(_info_label)
+	style_button = Button.new()
+	style_button.name = "StyleButton"
+	style_button.focus_mode = Control.FOCUS_NONE
+	style_button.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	style_button.offset_left = 20.0
+	style_button.offset_right = 290.0
+	style_button.offset_top = -96.0
+	style_button.offset_bottom = -24.0
+	style_button.add_theme_font_size_override("font_size", 26)
+	_style_button(style_button)
+	style_button.pressed.connect(toggle_style)
+	_hud.add_child(style_button)
 	_over_panel = PanelContainer.new()
 	_over_panel.name = "GameOver"
 	_over_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
@@ -630,16 +775,27 @@ func _build_hud() -> void:
 	restart_button.custom_minimum_size = Vector2(220.0, 72.0)
 	restart_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	restart_button.add_theme_font_size_override("font_size", 30)
+	_style_button(restart_button)
+	restart_button.pressed.connect(restart)
+	box.add_child(restart_button)
+
+
+func _style_button(button: Button) -> void:
 	for state_name: String in ["normal", "hover", "pressed"]:
 		var button_style := StyleBoxFlat.new()
-		button_style.bg_color = Color(Holo.CYAN, 0.18 if state_name == "normal" else 0.32)
+		button_style.bg_color = Color(0.02, 0.08, 0.14, 0.7) if state_name == "normal" else Color(Holo.CYAN, 0.32)
 		button_style.border_color = Holo.CYAN
 		button_style.set_border_width_all(2)
 		button_style.set_corner_radius_all(12)
-		restart_button.add_theme_stylebox_override(state_name, button_style)
-	restart_button.add_theme_color_override("font_color", Color(0.9, 0.98, 1.0))
-	restart_button.pressed.connect(restart)
-	box.add_child(restart_button)
+		button.add_theme_stylebox_override(state_name, button_style)
+	button.add_theme_color_override("font_color", Color(0.9, 0.98, 1.0))
+
+
+## HUD buttons are not board touches (no slab drop when tapping them).
+func is_over_game_ui(screen: Vector2) -> bool:
+	if style_button != null and style_button.visible and style_button.get_global_rect().has_point(screen):
+		return true
+	return _over_panel != null and _over_panel.visible and _over_panel.get_global_rect().has_point(screen)
 
 
 func _hud_label(font_size: int, color: Color) -> Label:
@@ -665,6 +821,7 @@ func _refresh_hud() -> void:
 	if _score_label == null:
 		return
 	_score_label.text = str(score)
+	style_button.text = "Style: %s" % ("Solid" if style == Style.SOLID else "Hologram")
 	var info: String = "Height %d   Best %d" % [height(), session_best]
 	if streak > 0:
 		info += "   Perfect ×%d" % streak
