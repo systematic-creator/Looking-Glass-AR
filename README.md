@@ -304,7 +304,7 @@ airspace. `get_box()` returns the `PlayBox` (never null; already set in
 | `ray_at_height(origin, dir, h)` | where it crosses y = h inside the footprint (or null) |
 
 Shortcuts on `LGGame`: `box_contains(point)`, `clamp_to_box(point)`.
-**Caps:** the height is clamped to `min(0.6 m, 1.5 x the footprint's long
+**Caps:** the height is clamped to `min(1.0 m, 3 x the footprint's long
 side)` (board units, so it scales with the board) and is at least 2 cm. The
 player's choice (the Airspace slider, shown only if min < max) stays within
 the game's range; it is saved with the placement (`box_height`, -1 = the
@@ -345,9 +345,14 @@ games need do nothing.
 `box_outline_while_playing() -> float` (0 hidden .. 1 as bright as while
 adjusting) to keep it on dimly. Tic-Tac-Toe uses 0.35.
 
-**The sample games:** Tic-Tac-Toe declares a small airspace (20 cm, 12-30 cm)
-and its pieces drop from inside the box top (a lower box means a shorter
-drop). It plays on a **3x3, 4x4 or 5x5** board, needing **3, 4 and 4 in a
+**The sample games:** Tic-Tac-Toe declares a 40 cm airspace (adjustable
+12-90 cm, the 3x cap of its 30 cm board) and its pieces drop from the **top
+of the box** (3 cm under it), so the Airspace slider sets the drop. The fall
+is gravity-timed (`HoloDrop.fall_time_for`: 0.3 s for 16 cm, about 0.5 s for
+40 cm, capped at 0.8 s) and on landing a **dust splash** (`HoloSplash`,
+CPUParticles3D, additive hologram motes in the piece's colour: cyan X,
+magenta O) puffs out along the slab with a slight rise and fades in 0.75 s,
+then frees itself. It plays on a **3x3, 4x4 or 5x5** board, needing **3, 4 and 4 in a
 row** (`TicTacToeRules.win_length_for`; three in a row on the bigger boards is
 a quick first-player win, five on 5x5 nearly always a draw). The size is
 picked on a hologram **options strip** lying on the table at the player's
@@ -383,7 +388,8 @@ mid-range phone.
 
 Materials are new instances, so animating one piece (flash, intensity) never
 touches another. Shaders: `holo.gdshader` (surfaces) and `holo_disc.gdshader`
-(flat glows, ripples). Tic-Tac-Toe is the worked example: a slab floating
+(flat glows, ripples), `HoloSplash.spawn(parent, position, color, radius)`
+(a one-shot particle dust cloud). Tic-Tac-Toe is the worked example: a slab floating
 2.6 cm over the glow, emissive grid, 3D X (crossed bars) and O (torus) that
 drop in, a gold win line, and a small spinning turn token on the far edge.
 
@@ -446,7 +452,8 @@ edge, Reset / Done, board clamping, glow clipping, persistence),
 scale, the free fallback and upgrade, the field relocalization jump, real
 world shifts, self-undoing jumps, the height guard, the debug readout),
 `ttt_tests` (tic-tac-toe 3x3 / 4x4 / 5x5 rules and win lengths, the options
-strip, scoreboard and reset, session persistence, taps and drops on every
+strip, scoreboard and reset, session persistence, drops from the box top
+with height-timed falls and colour-matched landing splashes, taps and drops on every
 cell at every size, AR taps on 5x5), `view_tests` (camera image vs
 rendering registration for several camera textures on a 19.5:9 screen, and
 taps on video pixels), `recovery_tests` (anchor-relative Fit edges / Adjust,

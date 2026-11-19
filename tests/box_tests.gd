@@ -92,8 +92,9 @@ func _test_box_maths() -> void:
 		and box.bounds().position.is_equal_approx(Vector3(-0.15, 0.0, -0.1))
 	))
 	check("box: height = the game's preferred height", is_equal_approx(box.height(), 0.2) and box.center().is_equal_approx(Vector3(0, 0.1, 0)))
-	check("box: the cap is 1.5x the long side", is_equal_approx(PlayBox.height_cap(Vector2(0.3, 0.2)), 0.45))
-	check("box: and never above 0.6 m", is_equal_approx(PlayBox.height_cap(Vector2(1.0, 0.8)), PlayBox.ABSOLUTE_MAX_HEIGHT))
+	check("box: the cap is 3x the long side", is_equal_approx(PlayBox.height_cap(Vector2(0.3, 0.2)), 0.9))
+	check("box: and never above 1.0 m", is_equal_approx(PlayBox.height_cap(Vector2(1.0, 0.8)), PlayBox.ABSOLUTE_MAX_HEIGHT) and is_equal_approx(PlayBox.ABSOLUTE_MAX_HEIGHT, 1.0))
+	check("box: small boards keep a proportional cap (10 cm board -> 30 cm)", is_equal_approx(PlayBox.height_cap(Vector2(0.1, 0.1)), 0.3))
 	check("box: contains points inside, not outside or below the floor", (
 		box.contains(Vector3(0.1, 0.1, 0.05)) and not box.contains(Vector3(0.2, 0.1, 0.0))
 		and not box.contains(Vector3(0.0, -0.01, 0.0)) and not box.contains(Vector3(0.0, 0.21, 0.0))
@@ -120,15 +121,15 @@ func _test_box_maths() -> void:
 
 func _test_manifest_limits() -> void:
 	var greedy: PlayBox = PlayBox.from_manifest(_manifest(Vector2(0.3, 0.2), 2.0, 0.0, 3.0))
-	check("limits: a game asking for 2 m on a 30 cm board gets the 45 cm cap", (
-		is_equal_approx(greedy.height(), 0.45) and is_equal_approx(greedy.max_height, 0.45)
+	check("limits: a game asking for 2 m on a 30 cm board gets the 90 cm cap", (
+		is_equal_approx(greedy.height(), 0.9) and is_equal_approx(greedy.max_height, 0.9)
 	))
 	var big: PlayBox = PlayBox.from_manifest(_manifest(Vector2(1.2, 1.0), 0.0, 0.0, 5.0))
-	check("limits: no box is taller than 0.6 m", is_equal_approx(big.max_height, 0.6))
+	check("limits: no box is taller than 1.0 m", is_equal_approx(big.max_height, 1.0))
 	var plain: PlayBox = PlayBox.from_manifest(_manifest(Vector2(0.3, 0.3)))
 	check("limits: no box_height -> board_height, adjustable from 2 cm to the cap", (
 		is_equal_approx(plain.height(), 0.1) and is_equal_approx(plain.min_height, PlayBox.MIN_HEIGHT)
-		and is_equal_approx(plain.max_height, 0.45) and plain.is_adjustable()
+		and is_equal_approx(plain.max_height, 0.9) and plain.is_adjustable()
 	))
 	var fixed: PlayBox = PlayBox.from_manifest(_manifest(Vector2(0.3, 0.3), 0.2, 0.2, 0.2))
 	check("limits: min == max is a fixed (non-adjustable) box", not fixed.is_adjustable() and is_equal_approx(fixed.height(), 0.2))
@@ -299,18 +300,24 @@ func _test_box_rays() -> void:
 func _test_games_use_their_box() -> void:
 	var host: GameHost = await make_host(&"tic_tac_toe")
 	var game: TicTacToeGame = host.game as TicTacToeGame
-	check("ttt: a small airspace (20 cm, 12-30 cm)", (
-		is_equal_approx(game.get_box().height(), 0.2) and is_equal_approx(game.get_box().min_height, 0.12)
-		and is_equal_approx(game.get_box().max_height, 0.3)
+	check("ttt: a 40 cm airspace, adjustable 12-90 cm (the 3x cap)", (
+		is_equal_approx(game.get_box().height(), 0.4) and is_equal_approx(game.get_box().min_height, 0.12)
+		and is_equal_approx(game.get_box().max_height, 0.9)
 	))
 	check("ttt: the tap surface (slab top) is inside the box", host.pick_height() == TicTacToeGame.SLAB_TOP)
 	var rest: float = TicTacToeGame.SLAB_TOP + TicTacToeGame.PIECE_LIFT
-	check("ttt: pieces drop from inside the box top", (
-		rest + game.drop_height() <= game.get_box().height() - TicTacToeGame.DROP_TOP_MARGIN + 0.0001
+	check("ttt: pieces drop from the box top (just under it)", (
+		is_equal_approx(rest + game.drop_height(), game.get_box().height() - TicTacToeGame.DROP_TOP_MARGIN)
+	))
+	var tall_drop: float = game.drop_height()
+	host.set_box_height(0.9)
+	check("ttt: the tallest box (90 cm) drops from 90 cm, landing in under 0.8 s", (
+		is_equal_approx(rest + game.drop_height(), 0.9 - TicTacToeGame.DROP_TOP_MARGIN)
+		and HoloDrop.fall_time_for(game.drop_height()) <= HoloDrop.MAX_FALL_TIME
 	))
 	host.set_box_height(0.12)
 	check("ttt: a shorter box means a shorter drop, still inside", (
-		game.drop_height() < TicTacToeGame.DROP_HEIGHT and rest + game.drop_height() <= 0.12
+		game.drop_height() < tall_drop and rest + game.drop_height() <= 0.12
 	))
 	var camera: Camera3D = host.active_camera()
 	_tap(camera.unproject_position(game.to_global(TicTacToeGame.cell_top(4))))
