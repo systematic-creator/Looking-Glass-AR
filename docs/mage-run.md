@@ -12,6 +12,10 @@ user as the target look. It is not a shipped asset and must not be packaged,
 traced or used as a texture. Every shipped model, texture and sound is made in
 code or comes from a CC0 source (see [Assets and licensing](#assets-and-licensing)).*
 
+![Chosen direction: solid storybook road with hologram rows](mage-run/concept-combined.jpg)
+
+*`docs/mage-run/concept-combined.jpg` is a generated concept mockup of the chosen direction (solid storybook world plus hologram upper rows). Mood only, not to scale; in-game the hologram rows sit directly above the road lanes.*
+
 ---
 
 ## 1. Concept
