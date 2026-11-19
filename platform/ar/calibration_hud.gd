@@ -8,6 +8,7 @@ signal lock_toggled(locked: bool)
 signal magnify_toggled(enabled: bool)
 signal recenter_pressed()
 signal replace_pressed()
+signal replace_keep_pressed()
 signal place_pressed()
 signal place_in_front_pressed()
 signal play_without_ar_pressed()
@@ -38,6 +39,7 @@ var place_in_front_button: Button
 var play_without_ar_button: Button
 var trace_button: Button
 var use_area_button: Button
+var replace_keep_button: Button
 var trace_done_button: Button
 var trace_clear_button: Button
 var trace_cancel_button: Button
@@ -142,7 +144,7 @@ func _ready() -> void:
 	column.add_child(row)
 	trace_button = _button(row, "Trace play area", PRIMARY_SIZE, true)
 	trace_button.pressed.connect(func() -> void: trace_pressed.emit())
-	use_area_button = _button(row, "Use traced area", PRIMARY_SIZE, true)
+	use_area_button = _button(row, "Use my outline", PRIMARY_SIZE, true)
 	use_area_button.pressed.connect(func() -> void: use_area_pressed.emit())
 	place_button = _button(row, "Place here", SECONDARY_SIZE, false)
 	place_button.pressed.connect(func() -> void: place_pressed.emit())
@@ -166,6 +168,8 @@ func _ready() -> void:
 	lock_button.pressed.connect(func() -> void: lock_toggled.emit(true))
 	unlock_button = _button(row, "Unlock", SECONDARY_SIZE, false)
 	unlock_button.pressed.connect(func() -> void: lock_toggled.emit(false))
+	replace_keep_button = _button(row, "Re-place on table", PRIMARY_SIZE, true)
+	replace_keep_button.pressed.connect(func() -> void: replace_keep_pressed.emit())
 	replace_button = _button(row, "Re-place", SECONDARY_SIZE, false)
 	replace_button.pressed.connect(func() -> void: replace_pressed.emit())
 	recenter_button = _button(row, "Recenter", SECONDARY_SIZE, false)
@@ -333,6 +337,7 @@ func apply_flow(flow: CalibrationFlow) -> void:
 	lock_button.visible = bool(shown["lock"])
 	unlock_button.visible = bool(shown["unlock"])
 	replace_button.visible = bool(shown["replace"])
+	replace_keep_button.visible = bool(shown["replace_keep"])
 	recenter_button.visible = bool(shown["recenter"])
 	magnify_button.visible = bool(shown["magnify"])
 	airspace_panel.visible = bool(shown["airspace"]) and airspace_adjustable
@@ -369,7 +374,7 @@ func is_over_ui(screen_position: Vector2) -> bool:
 func all_buttons() -> Array[Button]:
 	return [place_button, trace_button, use_area_button, trace_done_button, trace_clear_button, trace_cancel_button,
 		place_in_front_button, play_without_ar_button, lock_button, unlock_button, magnify_button, recenter_button, replace_button,
-		fit_done_button, fit_reset_button, fit_edges_button]
+		fit_done_button, fit_reset_button, fit_edges_button, replace_keep_button]
 
 
 ## Set the debug text; `forced` shows it even if the player has not toggled it

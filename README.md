@@ -160,6 +160,54 @@ on a detected plane that then floats or sinks 3-25 cm against that plane for
 1.5 s is re-anchored onto it (a board deliberately standing above the plane
 at Lock, e.g. on an object ARCore did not map, is left alone).
 
+**Before Lock (Fit edges / Adjust)** the board and the outline already hang
+from the anchor (a plane-attached one when placed on a plane): plane
+re-estimation never moves them, a PLANE outline is replaced by ARCore's
+refined plane only when it grows by more than 15 %, and the same jump and
+height guards run. The height guard waits while a finger is down. Re-anchoring
+keeps the fit handles' outline in place. Anchor changes under 1 mm are
+ignored, so sensor noise does not shake the board.
+
+**Tracking loss and recovery.** The board is hidden after 0.5 s when the
+camera stops tracking *or* when the board's anchor is paused. This happens
+after the camera was covered: the camera may track again while ARCore has
+paused every plane and the anchor ("anc P", planes 0/N), and showing the
+board at its stale pose put it off the table. It comes back at the anchor's
+pose when the anchor tracks again. While the camera tracks but the anchor
+stays lost for 1.5 s, a newly tracked plane at the board's surface height
+(±3 cm) that covers at least half of the play area re-anchors the board on
+it ("recovered on matching plane"). After 4 s the HUD offers **Re-place on
+table**. This keeps the fitted outline's shape, the board's turn and its
+scale: aim the dot at the middle of the play area and tap **Use my outline**,
+which places it on a plane anchor and opens Fit edges to nudge it. There is
+no re-tracing. Messages say what to do (point back at the table, move
+slowly, too dark / too fast / not enough detail). With fewer than 40
+feature points for 2 s, a hint says more light (or a textured cloth) helps
+tracking.
+
+**Camera image vs rendering (why content can "swim").** The plugin gives
+ARCore a display with the camera texture's aspect, so ARCore's projection
+covers the whole image. Godot 4.4.1's feed shader stretches the whole texture
+over the screen with no UV transform, and Godot renders with that projection
+as is, so both are stretched the same way. The view and projection come from
+the same `ArSession_update` as the camera texture. `view_tests` checks that
+every table point renders on its video pixel from every viewpoint (and that
+the screen-aspect crop ARCore uses by default would be off by 100-270 px).
+So content that still slides over the table while the board's pose reads
+constant comes from ARCore's world itself: camera pose error, or a plane
+height that is off. Both are worse in low light and on plain dark surfaces.
+To tell which, turn the debug line on:
+
+- yellow dots are ARCore's feature points;
+- a yellow cross marks the anchor;
+- a magenta cross stays fixed in world space where the board was placed;
+- `feat +1.2cm n14` is the median height of the feature points on the play
+  area over ARCore's plane.
+
+If the dots stick to the table's texture but the board slides, the plane
+height is off (see `feat`). If dots and crosses slide together, ARCore's
+camera tracking is off (more light, more texture).
+
 **The field case (lg-test-d206a6e).** The reading was "anc T free d
 0.0/646.6mm lock 647mm surf -12.9cm lost 1". Lock had swapped the reticle's
 plane anchor for a free one, because the board was dragged off it (Fit edges
@@ -196,6 +244,10 @@ The debug line also shows, once the board is placed:
   plane (index in ARCore's plane list this frame, and its height). A few cm
   off means the board floats over / sinks into the real surface, which looks
   like drifting as you walk around;
+- `feat +1.2cm n14`: feature points on the play area, median height over
+  that plane (a few cm off: ARCore's plane is not at the real surface, so the
+  board and outline shift with the viewing angle); `recovered N`: boards
+  re-anchored on a matching plane after a loss;
 - `jump held 628mm`: an anchor jump being held back; `fix rej1 acc0 h0 up0`:
   jumps rejected / accepted, height fixes, free-to-plane upgrades; `lost N`:
   camera tracking losses;
@@ -395,7 +447,12 @@ scale, the free fallback and upgrade, the field relocalization jump, real
 world shifts, self-undoing jumps, the height guard, the debug readout),
 `ttt_tests` (tic-tac-toe 3x3 / 4x4 / 5x5 rules and win lengths, the options
 strip, scoreboard and reset, session persistence, taps and drops on every
-cell at every size, AR taps on 5x5), `box_tests` (the play box: maths and caps, manifest limits,
+cell at every size, AR taps on 5x5), `view_tests` (camera image vs
+rendering registration for several camera textures on a 19.5:9 screen, and
+taps on video pixels), `recovery_tests` (anchor-relative Fit edges / Adjust,
+the unlocked height guard, the deadband, the covered-camera recovery on a
+matching plane, Re-place on table with the kept outline, loss and low-light
+messages, the debug overlay), `box_tests` (the play box: maths and caps, manifest limits,
 the game API and hooks, the Airspace slider, persistence across pause /
 resume / re-place / sessions, outline levels, tap rays, the games' boxes).
 Leaked-RID messages at exit are harmless.
