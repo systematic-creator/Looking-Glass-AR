@@ -16,6 +16,8 @@ signal use_area_pressed()
 signal trace_done_pressed()
 signal trace_clear_pressed()
 signal trace_cancel_pressed()
+## The player moved the airspace (play-box height) slider; board units.
+signal airspace_changed(height: float)
 ## Five quick taps on the step panel toggle the AR debug line.
 signal debug_toggled(visible: bool)
 
@@ -42,6 +44,12 @@ var magnify_button: Button
 var recenter_button: Button
 var replace_button: Button
 var debug_label: Label
+## Right-edge "Airspace" panel: a vertical slider for the play-box height,
+## shown while adjusting when the game allows a range.
+var airspace_panel: PanelContainer
+var airspace_slider: VSlider
+var airspace_value_label: Label
+var airspace_adjustable: bool = false
 ## Debug line shown because the player toggled it (5 taps on the panel).
 var debug_requested: bool = false
 
@@ -169,7 +177,80 @@ func _ready() -> void:
 	debug_label.add_theme_constant_override("outline_size", 5)
 	debug_label.visible = false
 	add_child(debug_label)
+	_build_airspace_panel()
 	apply_flow(CalibrationFlow.new())
+
+
+func _build_airspace_panel() -> void:
+	airspace_panel = PanelContainer.new()
+	airspace_panel.name = "Airspace"
+	airspace_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.08, 0.12, 0.78)
+	style.border_color = Color(0.55, 0.95, 1.0, 0.7)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(18)
+	style.content_margin_left = 12.0
+	style.content_margin_right = 12.0
+	style.content_margin_top = 10.0
+	style.content_margin_bottom = 10.0
+	airspace_panel.add_theme_stylebox_override("panel", style)
+	airspace_panel.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+	airspace_panel.offset_left = -132.0
+	airspace_panel.offset_right = -16.0
+	airspace_panel.offset_top = -170.0
+	airspace_panel.offset_bottom = 170.0
+	add_child(airspace_panel)
+	var column := VBoxContainer.new()
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_theme_constant_override("separation", 6)
+	airspace_panel.add_child(column)
+	var title := Label.new()
+	title.text = "Airspace"
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_color_override("font_color", Color(0.75, 0.97, 1.0))
+	column.add_child(title)
+	airspace_slider = VSlider.new()
+	airspace_slider.name = "AirspaceSlider"
+	airspace_slider.focus_mode = Control.FOCUS_NONE
+	airspace_slider.custom_minimum_size = Vector2(72.0, 230.0)
+	airspace_slider.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	airspace_slider.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	airspace_slider.step = 0.005
+	airspace_slider.value_changed.connect(_on_airspace_slider)
+	column.add_child(airspace_slider)
+	airspace_value_label = Label.new()
+	airspace_value_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	airspace_value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	airspace_value_label.add_theme_font_size_override("font_size", 18)
+	column.add_child(airspace_value_label)
+	airspace_panel.visible = false
+
+
+## Range (board units) and current value of the airspace slider; a range
+## with no room to move (min == max) hides the slider.
+func configure_airspace(min_height: float, max_height: float, value: float) -> void:
+	airspace_adjustable = max_height - min_height > 0.001
+	# Changing the range can clamp the value: no airspace_changed for that.
+	airspace_slider.set_block_signals(true)
+	airspace_slider.min_value = min_height
+	airspace_slider.max_value = max_height
+	airspace_slider.value = value
+	airspace_slider.set_block_signals(false)
+	_show_airspace_value(value)
+	if not airspace_adjustable:
+		airspace_panel.visible = false
+
+
+func _on_airspace_slider(value: float) -> void:
+	_show_airspace_value(value)
+	airspace_changed.emit(value)
+
+
+func _show_airspace_value(value: float) -> void:
+	airspace_value_label.text = "%d cm" % roundi(value * 100.0)
 
 
 func _process(delta: float) -> void:
@@ -231,6 +312,7 @@ func apply_flow(flow: CalibrationFlow) -> void:
 	replace_button.visible = bool(shown["replace"])
 	recenter_button.visible = bool(shown["recenter"])
 	magnify_button.visible = bool(shown["magnify"])
+	airspace_panel.visible = bool(shown["airspace"]) and airspace_adjustable
 	sweep_hint.visible = bool(shown["sweep_hint"])
 	stats_label.visible = bool(shown["stats"])
 	title_label.text = flow.title()
@@ -252,6 +334,8 @@ func is_over_ui(screen_position: Vector2) -> bool:
 	for button: Button in all_buttons():
 		if button.visible and button.get_global_rect().has_point(screen_position):
 			return true
+	if airspace_panel.visible and airspace_panel.get_global_rect().has_point(screen_position):
+		return true
 	return _banner.visible and _banner.get_global_rect().has_point(screen_position)
 
 

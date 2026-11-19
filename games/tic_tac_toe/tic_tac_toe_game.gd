@@ -14,8 +14,13 @@ const SLAB_BOTTOM: float = 0.014
 const SLAB_TOP: float = 0.026
 ## Piece centre above the slab top.
 const PIECE_LIFT: float = 0.013
-## Pieces drop in from this high above their cell.
+## Pieces drop in from this high above their cell (lower if the play box
+## is shorter: they always start inside it).
 const DROP_HEIGHT: float = 0.16
+## Room kept between a falling piece's start and the box top.
+const DROP_TOP_MARGIN: float = 0.03
+## Box outline brightness while playing (see LGGame.box_outline_while_playing).
+const OUTLINE_WHILE_PLAYING: float = 0.35
 ## Taps this far past the grid's edge (metres) still pick the edge cell, so
 ## a slightly-off fingertip on a phone still counts.
 const TAP_TOLERANCE: float = 0.03
@@ -39,6 +44,16 @@ var _clock: float = 0.0
 
 func board_surface_height() -> float:
 	return SLAB_TOP
+
+
+func box_outline_while_playing() -> float:
+	return OUTLINE_WHILE_PLAYING
+
+
+## How far pieces fall: DROP_HEIGHT, or less so they start inside the box.
+func drop_height() -> float:
+	var rest: float = SLAB_TOP + PIECE_LIFT
+	return clampf(get_box().height() - rest - DROP_TOP_MARGIN, 0.02, DROP_HEIGHT)
 
 
 func _on_board_ready() -> void:
@@ -215,7 +230,7 @@ func _add_mark(index: int, mark: int) -> HoloDrop:
 	var ripple: MeshInstance3D = Holo.ripple(Holo.CYAN if mark == TicTacToeRules.Mark.X else Holo.MAGENTA, CELL * 0.75)
 	ripple.position = cell_top(index) + Vector3(0.0, 0.002, 0.0)
 	_marks.add_child(ripple)
-	return HoloDrop.start(body, DROP_HEIGHT, ripple)
+	return HoloDrop.start(body, drop_height(), ripple)
 
 
 ## The drop animation of the piece in `index`, or null once it has landed.

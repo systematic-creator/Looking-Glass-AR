@@ -30,6 +30,7 @@ platform/
   host/orbit_camera.gd    touch / desktop camera for the non-AR fallback
   game/lg_game.gd         LGGame: base class every game extends (the contract)
   game/lg_game_manifest.gd  LGGameManifest: catalog entry resource
+  game/play_box.gd        PlayBox: the game's play volume ("simulation box")
   game/game_catalog.gd    registers manifests found in res://games/*/manifest.tres
   ar/ar_session.gd        AR mode, calibration, anchoring, lock / unlock
   ar/calibration_flow.gd  pure state machine: scan -> place -> adjust -> lock
@@ -41,6 +42,7 @@ platform/
   ar/surface_region.gd    play-area polygon: fit / clamp the board footprint
   visual/holo.gd          Holo: shared hologram materials, glow base, bars, ripples
   visual/holo_drop.gd     HoloDrop: drop-in animation (fall, squash, flash, ripple)
+  visual/play_box_outline.gd  PlayBoxOutline: hologram outline of the play box
   visual/*.gdshader       the two hologram shaders (Compatibility-renderer safe)
 games/
   tic_tac_toe/            sample game (hologram board)
@@ -57,7 +59,7 @@ GameHost
   WorldAnchor          the anchor in the room (ARCore anchor, yaw only)
     BoardPivot         player's offset, rotation, size (+ view magnify)
       Game (LGGame)    the game, in board space
-      BoardFrame       footprint outline, shown while adjusting
+      PlayBoxOutline   play-box outline: bright while adjusting, the game's level while playing
   OrbitCamera          fallback camera (non-AR)
   ARSession            XROrigin3D / XRCamera3D, reticle, scan overlay, calibration HUD
   HostHud              "‹ Games" button + the game's status line
@@ -98,7 +100,11 @@ space** and reacts to lifecycle hooks and board-space taps.
    project onto the selected surface's height only, and the footprint is
    clamped inside the traced area (or the plane): it stops at the edge instead
    of hanging off it. **Lock** starts the game. **Unlock** pauses it to adjust
-   again; **Re-place** goes back to step 1.
+   again; **Re-place** goes back to step 1. The glowing outline is the game's
+   **play box**: floor edges on the surface, corner pillars fading upward and a
+   faint top frame. If the game allows a range, the **Airspace** slider on the
+   right edge sets the box height (saved per game, kept through pause /
+   resume, Unlock and Re-place).
 
 **Staying put once locked.** Lock re-anchors the ARCore anchor exactly under
 the board's final spot (the drag offset is baked in; the board does not
@@ -144,12 +150,37 @@ A game is a folder under `res://games/<id>/` with a `manifest.tres`
 **Manifest fields:** `id` (lower-case identifier), `display_name`,
 `description`, `icon`, `min_players` / `max_players`, `board_size` (metres at
 scale 1, x by z), `board_height` (tallest point, for camera framing), `entry`
-(.tscn or .gd), `version`, `author`, `tags`.
+(.tscn or .gd), `version`, `author`, `tags`, and the play box height:
+`box_height` (preferred; 0 = `board_height`), `box_min_height` /
+`box_max_height` (the range the player may pick; 0 = 2 cm / the platform cap).
 
 **Board space** is the `LGGame` node's local space: the origin is the centre of
 the board resting on the surface, +Y is up, 1 unit = 1 metre at placement
 scale 1, and the footprint is `board_size` centred on the origin. Never move
 cameras, XR nodes or the game node itself; the platform moves the board.
+
+**The play box ("simulation box").** Every game plays inside a box in board
+space: the floor is the chosen surface (y = 0), the footprint is `board_size`
+(so the traced area, fit and the player's pinch-resize decide its real size
+and rotation, through the placement scale), and the height is the game's
+airspace. `get_box()` returns the `PlayBox` (never null; already set in
+`_on_board_ready()`):
+
+| `PlayBox` | |
+| --- | --- |
+| `size` | `Vector3(width, height, depth)`; `height()`, `footprint()` |
+| `bounds()` / `center()` | `AABB` from `(-w/2, 0, -d/2)`; centre of the volume |
+| `min_height` / `max_height` / `preferred_height`, `is_adjustable()` | the resolved, capped range |
+| `contains(point, margin)` / `clamp_point(point, margin)` | inside test / nearest inside point |
+| `intersect_ray(origin, dir)` | where a board-space ray enters the box (or null) |
+| `ray_at_height(origin, dir, h)` | where it crosses y = h inside the footprint (or null) |
+
+Shortcuts on `LGGame`: `box_contains(point)`, `clamp_to_box(point)`.
+**Caps:** the height is clamped to `min(0.6 m, 1.5 x the footprint's long
+side)` (board units, so it scales with the board) and is at least 2 cm. The
+player's choice (the Airspace slider, shown only if min < max) stays within
+the game's range; it is saved with the placement (`box_height`, -1 = the
+game's preferred height).
 
 **Hooks** (all optional):
 
@@ -160,6 +191,8 @@ cameras, XR nodes or the game node itself; the platform moves the board.
 | `_on_resumed()` / `_on_paused()` | `is_playing()` changed: run or freeze timers, AI, animation. |
 | `_on_board_tap(point: Vector3)` | A tap hit the board's tap surface (board space; returned with y = 0). Only while playing. |
 | `_on_board_drag(from, to)` | One-finger drag in board space, if `captures_drag()` returns true. |
+| `_on_box_ray(origin, direction)` | Every tap while playing, as a board-space ray, just before `_on_board_tap`: pick things in the airspace (`get_box().intersect_ray()`, `ray_at_height()`, your own geometry). |
+| `_on_box_changed(box: PlayBox)` | The player changed the airspace height (after `_on_board_ready`; also the `box_changed` signal). Re-fit anything tied to the top. |
 | `_on_exit()` | Player is leaving the game. Save here. |
 
 **Helpers:** `is_playing()`, `is_board_locked()`, `get_board_size()`,
@@ -169,9 +202,18 @@ playing; hidden during AR calibration, prefixed "Paused" otherwise),
 
 **Raised boards:** override `board_surface_height() -> float` (board space,
 metres at scale 1) when the surface players tap is above the table, e.g. a
-floating slab. The platform casts the finger's ray onto that plane; at a low
-phone angle, a 2.6 cm slab tapped on the table plane would be off by about a
-third of a tic-tac-toe cell.
+floating slab. The platform casts the finger's ray onto that plane (kept
+inside the box); at a low phone angle, a 2.6 cm slab tapped on the table
+plane would be off by about a third of a tic-tac-toe cell.
+
+**Box outline while playing:** hidden by default; override
+`box_outline_while_playing() -> float` (0 hidden .. 1 as bright as while
+adjusting) to keep it on dimly. Tic-Tac-Toe uses 0.35.
+
+**The sample games:** Tic-Tac-Toe declares a small airspace (20 cm, 12-30 cm)
+and its pieces drop from inside the box top (a lower box means a shorter
+drop). Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
+50-60 cm) and keeps its label under the top.
 
 ### Hologram look (`platform/visual/`)
 
@@ -188,6 +230,7 @@ mid-range phone.
 | `Holo.glow_base(board_size)` | Soft projector glow (with a faint grid) on the table under the board. |
 | `Holo.bar(from, to, thickness, material)` | A glowing bar between two points (grid lines, frames, win lines). |
 | `Holo.ripple(color, radius)` | Landing ring, animated by `HoloDrop`. |
+| `PlayBoxOutline` | The platform's box outline (16 thin bars, 5 shared materials); `set_level(0..1)`. |
 | `HoloDrop.start(body, height, ripple)` | Drop-in: gravity fall, squash and spring on landing, flash, ripple; signals `landed` / `finished`. `HoloDrop.curve(t, height)` is pure for tests. |
 | `Holo.CYAN`, `MAGENTA`, `GOLD`, `GREEN` | The palette. |
 
@@ -247,7 +290,10 @@ camera), `surface_tests` (play area: plane selection, tracing, clamping, a
 plywood-on-driveway scene model, screen-touch taps), `field_tests` (phone
 field-test regressions: Android touch sequences, trace robustness, world lock
 under camera motion / plane refinement / tracking loss, drift readout, the
-hologram board). Leaked-RID messages at exit are harmless.
+hologram board), `box_tests` (the play box: maths and caps, manifest limits,
+the game API and hooks, the Airspace slider, persistence across pause /
+resume / re-place / sessions, outline levels, tap rays, the games' boxes).
+Leaked-RID messages at exit are harmless.
 
 ## Android build
 

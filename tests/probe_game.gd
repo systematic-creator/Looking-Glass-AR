@@ -6,6 +6,9 @@ var events: Array[String] = []
 var taps: Array[Vector3] = []
 var drags: Array = []
 var wants_drag: bool = false
+var box_rays: Array = []
+var box_changes: Array[float] = []
+var outline_level: float = 0.0
 
 
 func _on_board_ready() -> void:
@@ -43,3 +46,15 @@ func _on_board_drag(from: Vector3, to: Vector3) -> void:
 
 func captures_drag() -> bool:
 	return wants_drag
+
+
+func _on_box_ray(origin: Vector3, direction: Vector3) -> void:
+	box_rays.append([origin, direction])
+
+
+func _on_box_changed(box: PlayBox) -> void:
+	box_changes.append(box.height())
+
+
+func box_outline_while_playing() -> float:
+	return outline_level

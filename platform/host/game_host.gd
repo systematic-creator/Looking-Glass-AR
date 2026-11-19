@@ -31,7 +31,11 @@ var manifest: LGGameManifest
 var session: ARSession
 var world_anchor: Node3D
 var pivot: Node3D
+## The adjust-mode outline: the game's play box (a PlayBoxOutline).
 var board_frame: Node3D
+## The game's play volume (board space); also on game.get_box().
+var box: PlayBox
+var box_outline: PlayBoxOutline
 var orbit_camera: OrbitCamera
 var environment: Environment
 var load_error: String = ""
@@ -65,8 +69,10 @@ func _ready() -> void:
 		_status_label.text = load_error
 		orbit_camera.camera.current = true
 		return
-	board_frame = make_board_frame(manifest.board_size)
-	board_frame.visible = false
+	box_outline = PlayBoxOutline.new()
+	box_outline.build(box)
+	box_outline.visible = false
+	board_frame = box_outline
 	pivot.add_child(board_frame)
 	orbit_camera.frame_board(manifest.board_size, manifest.board_height)
 	session = ARSession.new()
@@ -75,9 +81,12 @@ func _ready() -> void:
 	session.board_frame = board_frame
 	session.placement_path = "user://lg_placement_%s.cfg" % manifest.id
 	session.board_size = manifest.board_size
+	session.board_frame_play_level = clampf(game.box_outline_while_playing(), 0.0, 1.0)
+	session.box_height_changed.connect(set_box_height)
 	session.board_lock_changed.connect(_on_board_lock_changed)
 	add_child(session)
 	session.setup(world_anchor, pivot, orbit_camera.camera, environment)
+	set_box_height(session.placement.box_height)
 	_on_board_lock_changed(session.is_board_locked())
 	_gestures.tap_slop_px = tap_slop_for_screen()
 
@@ -104,6 +113,8 @@ func _load_game() -> bool:
 		return false
 	game_id = id
 	game.name = "Game"
+	box = PlayBox.from_manifest(manifest)
+	game.lg_set_box(box)
 	pivot.add_child(game)
 	game.status_changed.connect(func(_text: String) -> void: refresh_status())
 	game.playing_changed.connect(func(_playing: bool) -> void: refresh_status())
@@ -120,6 +131,36 @@ func _on_board_lock_changed(locked: bool) -> void:
 	_dragging_board = false
 	_gestures.reset()
 	refresh_status()
+
+
+## Set the airspace height (board units; < 0 = the game's preferred height),
+## clamped to the game's limits. Rebuilds the outline and tells the game.
+func set_box_height(height: float) -> void:
+	if box == null:
+		return
+	var before: float = box.height()
+	box.set_height(height if height >= 0.0 else box.preferred_height)
+	if box_outline != null:
+		box_outline.build(box)
+	if session != null:
+		session.configure_box(box)
+	if not is_equal_approx(before, box.height()):
+		game.lg_set_box(box)
+
+
+## Pickable height for taps: the game's surface, kept inside the box.
+func pick_height() -> float:
+	if box == null:
+		return game.board_surface_height()
+	return clampf(game.board_surface_height(), 0.0, box.height())
+
+
+## The board-space ray under a screen point: [origin, unit direction].
+static func screen_ray_in_board(camera: Camera3D, board: Node3D, screen: Vector2) -> Array[Vector3]:
+	var inverse: Transform3D = board.global_transform.affine_inverse()
+	var origin: Vector3 = inverse * camera.project_ray_origin(screen)
+	var direction: Vector3 = (inverse.basis * camera.project_ray_normal(screen)).normalized()
+	return [origin, direction]
 
 
 ## The game's status line. While the AR board is being placed / adjusted the
@@ -239,7 +280,9 @@ func route_gesture(gesture: Dictionary) -> void:
 		&"tap":
 			_dragging_board = false
 			taps_seen += 1
-			var point: Variant = screen_to_board(camera, game, gesture["position"] as Vector2, game.board_surface_height())
+			var ray: Array[Vector3] = screen_ray_in_board(camera, game, gesture["position"] as Vector2)
+			game.lg_box_ray(ray[0], ray[1])
+			var point: Variant = screen_to_board(camera, game, gesture["position"] as Vector2, pick_height())
 			last_tap_point = point
 			if point != null:
 				taps_on_board += 1
@@ -248,8 +291,8 @@ func route_gesture(gesture: Dictionary) -> void:
 			_update_tap_debug()
 		&"drag":
 			if game.captures_drag() and game.is_playing():
-				var from: Variant = screen_to_board(camera, game, gesture["from"] as Vector2, game.board_surface_height())
-				var to: Variant = screen_to_board(camera, game, gesture["to"] as Vector2, game.board_surface_height())
+				var from: Variant = screen_to_board(camera, game, gesture["from"] as Vector2, pick_height())
+				var to: Variant = screen_to_board(camera, game, gesture["to"] as Vector2, pick_height())
 				if from != null and to != null:
 					game.lg_drag(from as Vector3, to as Vector3)
 			elif not session.is_ar():
@@ -285,7 +328,7 @@ func _show_tap_marker(point: Vector3) -> void:
 		material.no_depth_test = true
 		_tap_marker.material_override = material
 		game.add_sibling(_tap_marker)
-	_tap_marker.position = point + Vector3(0.0, game.board_surface_height() + 0.004, 0.0)
+	_tap_marker.position = point + Vector3(0.0, pick_height() + 0.004, 0.0)
 	_tap_marker.visible = true
 	_tap_marker_time = 0.5
 

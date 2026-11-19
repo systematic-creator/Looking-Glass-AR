@@ -51,9 +51,14 @@ func _on_board_ready() -> void:
 	_label.font_size = 48
 	_label.outline_size = 12
 	_label.text = "Competitive Evolution\ncoming soon"
-	_label.position = Vector3(0.0, GLOBE_RADIUS * 2.0 + 0.1, 0.0)
 	add_child(_label)
+	_on_box_changed(get_box())
 	set_status("Competitive Evolution is on hiatus. This board is a placeholder.")
+
+
+## Keep the "coming soon" label inside the (tall) play box.
+func _on_box_changed(box: PlayBox) -> void:
+	_label.position = Vector3(0.0, minf(GLOBE_RADIUS * 2.0 + 0.1, box.height() - 0.03), 0.0)
 
 
 func _process(delta: float) -> void:

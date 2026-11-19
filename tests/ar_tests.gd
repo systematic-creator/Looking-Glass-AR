@@ -61,7 +61,9 @@ func _test_fallback_host() -> void:
 	check("fallback: an identity local anchor is in place and the board counts as locked", (
 		ar.anchors.has_anchor() and ar.is_placed() and ar.is_board_locked()
 	))
-	check("fallback: the adjust outline stays hidden", not host.board_frame.visible)
+	check("fallback: no bright adjust outline (only the game's dim play-box opt-in)", (
+		host.box_outline.level <= TicTacToeGame.OUTLINE_WHILE_PLAYING + 0.001
+	))
 	await free_host(host)
 
 
@@ -386,8 +388,9 @@ func _test_ar_calibration_session() -> void:
 	))
 	ar.set_locked(true)
 	await frames(1)
-	check("ar calibration: locking starts the game and hides the outline", (
-		game.is_playing() and game.is_board_locked() and not host.board_frame.visible
+	check("ar calibration: locking starts the game and dims the outline to the game's level", (
+		game.is_playing() and game.is_board_locked()
+		and is_equal_approx(host.box_outline.level, TicTacToeGame.OUTLINE_WHILE_PLAYING)
 		and not ar.hud.lock_button.visible and ar.hud.unlock_button.visible
 	))
 	ar.begin_replace()

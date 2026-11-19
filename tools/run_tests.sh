@@ -5,7 +5,7 @@ GODOT="${GODOT:-godot}"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 "$GODOT" --headless --path . --import >/dev/null 2>&1
 status=0
-for suite in smoke_test platform_tests ar_tests surface_tests field_tests; do
+for suite in smoke_test platform_tests ar_tests surface_tests field_tests box_tests; do
 	out="$("$GODOT" --headless --path . "res://tests/$suite.tscn" 2>&1)"
 	code=$?
 	echo "$out" | grep -E "^FAIL" || true

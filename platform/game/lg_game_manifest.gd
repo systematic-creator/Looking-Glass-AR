@@ -18,6 +18,14 @@ extends Resource
 @export var board_size: Vector2 = Vector2(0.4, 0.4)
 ## Tallest point the game draws above the surface, in metres (camera framing).
 @export var board_height: float = 0.15
+## The play volume ("simulation box", see PlayBox) above the footprint, in
+## metres at scale 1. box_height: preferred airspace (0 = board_height).
+## box_min_height / box_max_height: what the player may pick in the adjust
+## step (0 = platform defaults). The platform caps every box at
+## PlayBox.height_cap(board_size): 1.5 x the longer side, at most 0.6 m.
+@export var box_height: float = 0.0
+@export var box_min_height: float = 0.0
+@export var box_max_height: float = 0.0
 ## Entry point: a .tscn whose root script extends LGGame, or a .gd script
 ## that extends LGGame.
 @export_file("*.tscn", "*.gd") var entry: String = ""
@@ -47,6 +55,10 @@ func validate() -> PackedStringArray:
 			break
 	if board_height < 0.0:
 		errors.append("board_height must be >= 0")
+	if box_height < 0.0 or box_min_height < 0.0 or box_max_height < 0.0:
+		errors.append("box heights must be >= 0 (0 = default)")
+	elif box_min_height > 0.0 and box_max_height > 0.0 and box_min_height > box_max_height:
+		errors.append("box_min_height must be <= box_max_height")
 	if entry.is_empty():
 		errors.append("entry is empty")
 	elif not (entry.ends_with(".tscn") or entry.ends_with(".gd")):

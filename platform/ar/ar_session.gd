@@ -28,6 +28,8 @@ signal board_lock_changed(locked: bool)
 signal board_placed()
 ## AR stopped and the touch camera took over.
 signal fell_back(reason: String)
+## The player picked another airspace height (board units, saved).
+signal box_height_changed(height: float)
 
 enum Mode { FALLBACK, AR }
 enum Phase { SEARCHING, READY, PLACED }
@@ -91,8 +93,10 @@ var pivot: Node3D
 ## The touch / desktop camera used outside AR.
 var fallback_camera: Camera3D
 var environment: Environment
-## Footprint outline under the pivot; visible while the AR board is unlocked.
+## Play-box outline under the pivot; visible while the AR board is unlocked.
 var board_frame: Node3D
+## Outline brightness while playing (the game's opt-in; 0 = hidden).
+var board_frame_play_level: float = 0.0
 ## Where this game's placement (size, rotation) is saved.
 var placement_path: String = BoardPlacement.SAVE_PATH
 ## The game's footprint at scale 1 (metres), for fitting and clamping.
@@ -268,6 +272,9 @@ func _enter_fallback() -> void:
 	anchors.place_at_pose(Transform3D.IDENTITY)
 	placement = BoardPlacement.new()
 	placement.scale = 1.0
+	var saved := BoardPlacement.new()
+	if saved.load_from(placement_path):
+		placement.box_height = saved.box_height
 	phase = Phase.PLACED
 	if fallback_camera != null:
 		fallback_camera.current = true
@@ -329,6 +336,7 @@ func _enter_ar() -> void:
 	hud.trace_done_pressed.connect(func() -> void: finish_trace())
 	hud.trace_clear_pressed.connect(clear_trace)
 	hud.trace_cancel_pressed.connect(cancel_trace)
+	hud.airspace_changed.connect(set_box_height)
 	hud.apply_flow(flow)
 	_sync_play()
 
@@ -524,10 +532,36 @@ func set_locked(locked: bool) -> void:
 	_sync_play()
 
 
+## The player's airspace height (board units). Saved with the placement
+## (in fallback only the height is written, so the AR placement is kept).
+func set_box_height(height: float) -> void:
+	if placement == null:
+		return
+	placement.box_height = height
+	if is_ar():
+		placement.save(placement_path)
+	else:
+		var saved := BoardPlacement.new()
+		saved.load_from(placement_path)
+		saved.box_height = height
+		saved.save(placement_path)
+	box_height_changed.emit(height)
+
+
+## Range and value for the HUD airspace slider.
+func configure_box(box: PlayBox) -> void:
+	if hud != null:
+		hud.configure_airspace(box.min_height, box.max_height, box.height())
+
+
 func _sync_play() -> void:
 	var locked: bool = is_board_locked()
 	if board_frame != null:
-		board_frame.visible = is_ar() and phase == Phase.PLACED and not locked
+		var adjusting: bool = is_ar() and phase == Phase.PLACED and not locked
+		var playing: bool = phase == Phase.PLACED and locked and board_frame_play_level > 0.0
+		board_frame.visible = adjusting or playing
+		if board_frame.has_method("set_level"):
+			board_frame.call("set_level", 1.0 if adjusting else board_frame_play_level)
 	if _region_node != null:
 		_region_node.visible = is_ar() and phase == Phase.PLACED and not locked
 	if locked != _last_locked:

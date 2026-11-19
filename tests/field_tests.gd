@@ -354,7 +354,10 @@ func _test_hologram_board() -> void:
 	_tap(camera.unproject_position(game.to_global(TicTacToeGame.cell_top(4))))
 	var body: Node3D = game.piece_body(4)
 	var drop: HoloDrop = game.drop_of(4)
-	check("drop: a new piece starts high above its cell", body != null and drop != null and body.position.y > TicTacToeGame.DROP_HEIGHT * 0.8)
+	check("drop: a new piece starts high above its cell, inside the play box", (
+		body != null and drop != null and body.position.y > game.drop_height() * 0.8 and game.drop_height() > 0.1
+		and game.pieces[4].position.y + body.position.y < game.get_box().height()
+	))
 	var mid: Dictionary = HoloDrop.curve(HoloDrop.FALL_TIME * 0.5, 0.16)
 	var impact: Dictionary = HoloDrop.curve(HoloDrop.FALL_TIME + 0.01, 0.16)
 	var done: Dictionary = HoloDrop.curve(HoloDrop.total_time(), 0.16)

@@ -21,6 +21,9 @@ var offset: Vector3 = Vector3.ZERO
 var yaw: float = 0.0
 var scale: float = DEFAULT_SCALE
 var locked: bool = false
+## The player's airspace height for this game (board units at scale 1;
+## -1 = the game's preferred height). Clamped by the game's PlayBox.
+var box_height: float = -1.0
 ## Viewing aid only, not persisted or shared: scales about the anchor.
 var magnify: float = 1.0
 
@@ -79,6 +82,7 @@ func to_dict() -> Dictionary:
 		"yaw": yaw,
 		"scale": scale,
 		"locked": locked,
+		"box_height": box_height,
 	}
 
 
@@ -87,6 +91,7 @@ func from_dict(data: Dictionary) -> void:
 	yaw = float(data.get("yaw", 0.0))
 	scale = clampf(float(data.get("scale", DEFAULT_SCALE)), MIN_SCALE, MAX_SCALE)
 	locked = bool(data.get("locked", false))
+	box_height = float(data.get("box_height", -1.0))
 
 
 func save(path: String = SAVE_PATH) -> Error:

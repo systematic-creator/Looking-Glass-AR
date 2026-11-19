@@ -139,6 +139,7 @@ func controls() -> Dictionary:
 		"place_in_front": offers_fallback(),
 		"play_without_ar": offers_fallback(),
 		"lock": step == Step.ADJUSTING,
+		"airspace": step == Step.ADJUSTING,
 		"replace": step == Step.ADJUSTING or step == Step.LOCKED,
 		"unlock": step == Step.LOCKED,
 		"magnify": step == Step.LOCKED,
