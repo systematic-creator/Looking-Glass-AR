@@ -22,13 +22,13 @@ extends Resource
 ## metres at scale 1. box_height: preferred airspace (0 = board_height).
 ## box_min_height / box_max_height: what the player may pick in the adjust
 ## step (0 = platform defaults). The platform caps every box at
-## PlayBox.height_cap(board_size): 1.5 x the longer side, at most 0.6 m.
+## PlayBox.height_cap(board_size): 3 x the longer side, at most 1.0 m.
 @export var box_height: float = 0.0
 @export var box_min_height: float = 0.0
 @export var box_max_height: float = 0.0
 ## Tall-box exception for games meant to stand on the FLOOR at life size
-## (e.g. a 1.8 m figure): the cap becomes 2.5 x the longer side, at most
-## PlayBox.TALL_MAX_HEIGHT (2.0 m). On a table the player's placement scale
+## (e.g. a 1.8 m figure): the cap becomes 4 x the longer side, at most
+## PlayBox.TALL_MAX_HEIGHT (3.0 m). On a table the player's placement scale
 ## shrinks the whole box as usual. Keep it off for table games.
 @export var tall_box: bool = false
 ## Entry point: a .tscn whose root script extends LGGame, or a .gd script

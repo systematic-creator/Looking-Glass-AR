@@ -362,20 +362,20 @@ func _test_gltf_drop_in() -> void:
 # --- Platform ------------------------------------------------------------------------
 
 func _test_platform_box_and_manifest() -> void:
-	check("box: tall cap is 2.5x the long side, at most 2.0 m", (
-		is_equal_approx(PlayBox.height_cap(Vector2(1.1, 1.1), true), 2.0) and is_equal_approx(PlayBox.height_cap(Vector2(0.4, 0.3), true), 1.0)
+	check("box: tall cap is 4x the long side, at most 3.0 m", (
+		is_equal_approx(PlayBox.height_cap(Vector2(1.1, 1.1), true), 3.0) and is_equal_approx(PlayBox.height_cap(Vector2(0.4, 0.3), true), 1.6)
 	))
-	check("box: the normal cap is unchanged (0.6 m)", is_equal_approx(PlayBox.height_cap(Vector2(1.1, 1.1)), 0.6))
+	check("box: the normal cap stays 1.0 m", is_equal_approx(PlayBox.height_cap(Vector2(1.1, 1.1)), 1.0))
 	var manifest: LGGameManifest = load("res://games/tattoo_studio/manifest.tres") as LGGameManifest
 	var box: PlayBox = PlayBox.from_manifest(manifest)
 	check("manifest: Tattoo Studio is valid and declares the tall box", manifest.is_valid() and manifest.tall_box)
-	check("box: Tattoo Studio's box goes to 2.0 m (1.92 preferred)", is_equal_approx(box.max_height, 2.0) and is_equal_approx(box.height(), 1.92))
+	check("box: Tattoo Studio's box goes to 3.0 m (1.92 preferred)", is_equal_approx(box.max_height, 3.0) and is_equal_approx(box.height(), 1.92))
 	var copy: LGGameManifest = manifest.duplicate() as LGGameManifest
 	copy.tall_box = false
-	check("box: without the exception the same manifest caps at 0.6 m", is_equal_approx(PlayBox.from_manifest(copy).max_height, 0.6))
+	check("box: without the exception the same manifest caps at 1.0 m", is_equal_approx(PlayBox.from_manifest(copy).max_height, 1.0))
 	copy.tall_box = true
-	copy.box_max_height = 2.5
-	check("manifest: a tall box over 2.0 m is invalid", _has(copy.validate(), "tall_box"))
+	copy.box_max_height = 3.5
+	check("manifest: a tall box over 3.0 m is invalid", _has(copy.validate(), "tall_box"))
 
 
 func _test_hooks_gated() -> void:

@@ -369,10 +369,10 @@ func _test_hologram_board() -> void:
 	))
 	var landed: Array[int] = [0]
 	drop.landed.connect(func() -> void: landed[0] += 1)
-	drop.advance(HoloDrop.FALL_TIME + 0.01)
+	drop.advance(drop.fall_time + 0.01)
 	var ripple: MeshInstance3D = drop.ripple
 	check("drop: landing sends a ripple across the board", landed[0] == 1 and ripple != null and ripple.visible)
-	drop.advance(HoloDrop.total_time())
+	drop.advance(drop.duration())
 	await frames(1)
 	check("drop: the piece ends at rest on its cell and the animation cleans up", (
 		is_zero_approx(body.position.y) and body.scale.is_equal_approx(Vector3.ONE) and game.drop_of(4) == null and not is_instance_valid(ripple)
@@ -381,7 +381,7 @@ func _test_hologram_board() -> void:
 		_tap(camera.unproject_position(game.to_global(TicTacToeGame.cell_top(index))))
 	check("win: X down the middle column wins", game.rules.winner == TicTacToeRules.Mark.X and game.rules.winning_line == [1, 4, 7])
 	check("win: the win lights up only when the winning piece lands", game.win_line() == null and game.drop_of(7) != null)
-	game.drop_of(7).advance(HoloDrop.FALL_TIME + 0.01)
+	game.drop_of(7).advance(game.drop_of(7).fall_time + 0.01)
 	var line: MeshInstance3D = game.win_line()
 	check("win: a glowing gold line runs through the winning cells", (
 		line != null and line.global_position.distance_to(game.to_global(TicTacToeGame.cell_top(4))) < 0.05

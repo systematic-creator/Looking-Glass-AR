@@ -26,11 +26,16 @@ const SLAB_BOTTOM: float = 0.014
 const SLAB_TOP: float = 0.026
 ## Piece centre above the slab top.
 const PIECE_LIFT: float = 0.013
-## Pieces drop in from this high above their cell (lower if the play box
-## is shorter: they always start inside it).
-const DROP_HEIGHT: float = 0.16
+## Pieces drop in from the TOP of the play box (its current height, less
+## DROP_TOP_MARGIN), so a taller airspace means a longer fall; the fall is
+## gravity-timed and capped (HoloDrop.MAX_FALL_TIME). On landing a dust
+## splash (HoloSplash) in the piece's colour puffs across the slab.
 ## Room kept between a falling piece's start and the box top.
 const DROP_TOP_MARGIN: float = 0.03
+## Shortest drop (a box barely taller than the slab).
+const MIN_DROP: float = 0.02
+## Splash reach as a fraction of the cell size.
+const SPLASH_REACH: float = 0.75
 ## Box outline brightness while playing (see LGGame.box_outline_while_playing).
 const OUTLINE_WHILE_PLAYING: float = 0.35
 ## Taps this far past the grid's edge (metres) still pick the edge cell, so
@@ -107,10 +112,15 @@ func box_outline_while_playing() -> float:
 	return OUTLINE_WHILE_PLAYING
 
 
-## How far pieces fall: DROP_HEIGHT, or less so they start inside the box.
+## How far pieces fall: from just under the box top to their rest height.
 func drop_height() -> float:
-	var rest: float = SLAB_TOP + PIECE_LIFT
-	return clampf(get_box().height() - rest - DROP_TOP_MARGIN, 0.02, DROP_HEIGHT)
+	var rest: float = SLAB_TOP + piece_lift()
+	return maxf(get_box().height() - rest - DROP_TOP_MARGIN, MIN_DROP)
+
+
+## Colour of a mark (X cyan, O magenta): pieces, ripples, splashes.
+static func mark_color(mark: int) -> Color:
+	return Holo.CYAN if mark == TicTacToeRules.Mark.X else Holo.MAGENTA
 
 
 func _on_board_ready() -> void:
@@ -397,10 +407,28 @@ func _add_mark(index: int, mark: int) -> HoloDrop:
 	bob.add_child(body)
 	_marks.add_child(root)
 	pieces[index] = root
-	var ripple: MeshInstance3D = Holo.ripple(Holo.CYAN if mark == TicTacToeRules.Mark.X else Holo.MAGENTA, cell_size() * 0.75)
+	var ripple: MeshInstance3D = Holo.ripple(mark_color(mark), cell_size() * 0.75)
 	ripple.position = top_of(index) + Vector3(0.0, 0.002, 0.0)
 	_marks.add_child(ripple)
-	return HoloDrop.start(body, drop_height(), ripple)
+	var drop: HoloDrop = HoloDrop.start(body, drop_height(), ripple)
+	var at: Vector3 = top_of(index) + Vector3(0.0, 0.004, 0.0)
+	var color: Color = mark_color(mark)
+	drop.landed.connect(func() -> void: splash_at(index, at, color), CONNECT_ONE_SHOT)
+	return drop
+
+
+## The landing dust cloud for the piece in `index` (its colour).
+func splash_at(index: int, at: Vector3, color: Color) -> HoloSplash:
+	if _marks == null or not is_instance_valid(_marks):
+		return null
+	var splash: HoloSplash = HoloSplash.spawn(_marks, at, color, cell_size() * SPLASH_REACH)
+	splash.name = "Splash%d" % index
+	return splash
+
+
+## The splash of the piece in `index` while it lasts, or null.
+func splash_of(index: int) -> HoloSplash:
+	return null if _marks == null else _marks.get_node_or_null(NodePath("Splash%d" % index)) as HoloSplash
 
 
 ## Piece centre above the slab top (thinner pieces on smaller cells sit lower).

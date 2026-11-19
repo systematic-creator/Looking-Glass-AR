@@ -9,7 +9,7 @@ Focus close-up. It is also the test bed for new 3D models (see
 ## Playing
 
 - **Place it.** Floor: trace / pick the floor and lock; the box defaults to
-  1.92 m of airspace (the platform's tall-box exception, up to 2.0 m). Table:
+  1.92 m of airspace (the platform's tall-box exception, adjustable up to 3.0 m). Table:
   the platform fits the 1.1 m footprint to the table (placement scale), and
   the in-game **Size** slider (10-100 % of life size) shrinks the model. The
   airspace follows the model (just above its head).

@@ -15,6 +15,8 @@ func run_tests() -> void:
 	await _test_taps_every_size()
 	await _test_score_persists_across_launches()
 	await _test_ar_taps_on_5x5()
+	_test_drop_timing()
+	await _test_drop_from_top_and_splash()
 	_reset_session()
 	ARSession.clear_saved_area()
 
@@ -229,5 +231,77 @@ func _test_ar_taps_on_5x5() -> void:
 	check("AR: the scoreboard floats beside the board, not over the grid", (
 		maxf(absf(game.scoreboard().position.x), absf(game.scoreboard().position.z)) > TicTacToeGame.GRID * 0.5 + TicTacToeGame.TAP_TOLERANCE
 	))
+	await free_host(host)
+	_reset_session()
+
+
+func _test_drop_timing() -> void:
+	check("drop timing: the reference 16 cm drop still takes 0.3 s", is_equal_approx(HoloDrop.fall_time_for(0.16), HoloDrop.FALL_TIME))
+	check("drop timing: taller drops take longer, gravity-like (4x height = 2x time)", (
+		is_equal_approx(HoloDrop.fall_time_for(0.64), 2.0 * HoloDrop.fall_time_for(0.16))
+	))
+	check("drop timing: capped at 0.8 s for very tall boxes, floored for tiny ones", (
+		is_equal_approx(HoloDrop.fall_time_for(3.0), HoloDrop.MAX_FALL_TIME) and is_equal_approx(HoloDrop.MAX_FALL_TIME, 0.8)
+		and is_equal_approx(HoloDrop.fall_time_for(0.001), HoloDrop.MIN_FALL_TIME)
+	))
+	var h: float = 0.8
+	var fall: float = HoloDrop.fall_time_for(h)
+	var mid: Dictionary = HoloDrop.curve(fall * 0.5, h)
+	var land: Dictionary = HoloDrop.curve(fall + 0.001, h)
+	check("drop timing: a tall fall eases in (3/4 height at half time) and lands on time", (
+		absf(float(mid["y"]) - h * 0.75) < 0.001 and float(land["y"]) < h * 0.05 and float(land["flash"]) > 0.9
+	))
+
+
+func _test_drop_from_top_and_splash() -> void:
+	_reset_session()
+	var host: GameHost = await make_host(&"tic_tac_toe")
+	var game: TicTacToeGame = host.game as TicTacToeGame
+	host.set_box_height(0.7)
+	var camera: Camera3D = host.active_camera()
+	_tap(camera.unproject_position(game.to_global(TicTacToeGame.cell_top(4))))
+	var body: Node3D = game.piece_body(4)
+	var drop: HoloDrop = game.drop_of(4)
+	var start_top: float = game.pieces[4].position.y + body.position.y
+	check("drop: a piece starts at the top of the (70 cm) box", absf(start_top - (0.7 - TicTacToeGame.DROP_TOP_MARGIN)) < 0.0005)
+	check("drop: its fall is timed for the height (< 0.8 s)", (
+		drop != null and is_equal_approx(drop.fall_time, HoloDrop.fall_time_for(game.drop_height())) and drop.fall_time > HoloDrop.FALL_TIME
+		and drop.fall_time <= HoloDrop.MAX_FALL_TIME
+	))
+	drop.advance(drop.fall_time * 0.5)
+	check("drop: mid-fall it is still in the air, no splash yet", body.position.y > game.drop_height() * 0.5 and game.splash_of(4) == null)
+	drop.advance(drop.fall_time * 0.5 + 0.01)
+	var splash: HoloSplash = game.splash_of(4)
+	check("splash: landing puffs a dust cloud on the cell", splash != null and splash.particles.emitting and splash.position.distance_to(TicTacToeGame.cell_top(4)) < 0.01)
+	var ramp: Gradient = splash.particles.color_ramp
+	check("splash: X's cloud is cyan and fades to nothing", (
+		Color(ramp.get_color(0).r, ramp.get_color(0).g, ramp.get_color(0).b).is_equal_approx(Color(Holo.CYAN.r, Holo.CYAN.g, Holo.CYAN.b))
+		and ramp.get_color(ramp.get_point_count() - 1).a == 0.0
+	))
+	var mat: StandardMaterial3D = (splash.particles.mesh as QuadMesh).material as StandardMaterial3D
+	check("splash: CPU particles (gl_compatibility), additive, unshaded, billboarded", (
+		splash.particles is CPUParticles3D and mat.blend_mode == BaseMaterial3D.BLEND_MODE_ADD
+		and mat.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED and mat.billboard_mode == BaseMaterial3D.BILLBOARD_PARTICLES
+	))
+	check("splash: a one-shot radial puff along the board with a slight rise, ~0.75 s", (
+		splash.particles.one_shot and is_equal_approx(splash.particles.flatness, 1.0) and is_equal_approx(splash.particles.spread, 180.0)
+		and splash.particles.gravity.y > 0.0 and splash.particles.lifetime >= 0.6 and splash.particles.lifetime <= 1.0
+	))
+	check("splash: sized to the cell", absf(splash.radius - game.cell_size() * TicTacToeGame.SPLASH_REACH) < 1e-5)
+	drop.finish()
+	_tap(camera.unproject_position(game.to_global(TicTacToeGame.cell_top(0))))
+	game.drop_of(0).finish()
+	var o_splash: HoloSplash = game.splash_of(0)
+	var o_color: Color = o_splash.particles.color_ramp.get_color(0) if o_splash != null else Color.BLACK
+	check("splash: O's cloud is magenta", o_splash != null and Color(o_color.r, o_color.g, o_color.b).is_equal_approx(Color(Holo.MAGENTA.r, Holo.MAGENTA.g, Holo.MAGENTA.b)))
+	await get_tree().create_timer(HoloSplash.LIFETIME + 0.4).timeout
+	await frames(2)
+	check("splash: clouds clean themselves up after they fade", game.splash_of(4) == null and game.splash_of(0) == null)
+	var manual: HoloSplash = HoloSplash.spawn(game, Vector3.ZERO, Holo.GOLD, 0.05)
+	manual.advance(HoloSplash.LIFETIME * 0.5)
+	var alive: bool = manual.is_running()
+	manual.advance(HoloSplash.LIFETIME)
+	await frames(1)
+	check("splash: advance() steps it to the end and frees it", alive and not is_instance_valid(manual))
 	await free_host(host)
 	_reset_session()
