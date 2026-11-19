@@ -25,6 +25,12 @@ extends RefCounted
 ##
 ## Storage: an RGBA8 Image (RGB = OD / OD_MAX, A = L) the model's shader
 ## samples; uploaded only after painting changed it (the game throttles).
+##
+## Undo: each finished stroke (press to release, needle or eraser) and each
+## Clear all pushes one history step: the BEFORE bytes of only the
+## UNDO_TILE x UNDO_TILE tiles it touched (dirty-tile diffs), deflate-
+## compressed. At most MAX_UNDO steps and MAX_UNDO_BYTES (compressed) are
+## kept; the oldest go first. undo() writes the newest step's tiles back.
 
 const DEFAULT_SIZE: int = 1024
 const PASS_STRENGTH: float = 0.25
@@ -37,6 +43,10 @@ const FACING_MIN: float = 0.25
 ## UV edge dilation in texels, so island borders do not show unpainted
 ## gutter texels through bilinear filtering.
 const DILATE_TEXELS: float = 1.5
+## Undo history: steps kept, tile size (texels) and memory cap (bytes).
+const MAX_UNDO: int = 20
+const UNDO_TILE: int = 64
+const MAX_UNDO_BYTES: int = 16 * 1024 * 1024
 
 enum Tool { NEEDLE, ERASER }
 
@@ -53,6 +63,12 @@ var _snapshot: PackedByteArray = PackedByteArray()
 var _in_stroke: bool = false
 var _tool: Tool = Tool.NEEDLE
 var _absorb: Vector3 = Vector3.ZERO
+## Undo steps, oldest first: {tiles: PackedInt32Array, raw: int, bytes: PackedByteArray (deflate)}.
+var _history: Array[Dictionary] = []
+var _history_bytes: int = 0
+## Tiles touched by the current stroke (1 per tile).
+var _tile_touched: PackedByteArray = PackedByteArray()
+var _tiles_per_row: int = 1
 
 
 func _init(texture_size: int = DEFAULT_SIZE) -> void:
@@ -60,6 +76,8 @@ func _init(texture_size: int = DEFAULT_SIZE) -> void:
 	data.resize(size * size * 4)
 	data.fill(0)
 	_stroke_weight.resize(size * size)
+	_tiles_per_row = int(ceil(float(size) / float(UNDO_TILE)))
+	_tile_touched.resize(_tiles_per_row * _tiles_per_row)
 	image = Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
 	texture = ImageTexture.create_from_image(image)
 
@@ -133,16 +151,112 @@ func inked_texels() -> int:
 	return count
 
 
-func clear() -> void:
+## Wipe all ink. With `undoable` the inked tiles go on the undo history
+## first, so a Clear all can be taken back.
+func clear(undoable: bool = true) -> void:
+	if undoable:
+		_tile_touched.fill(1)
+		_push_step(data, true)
 	data.fill(0)
 	_snapshot = PackedByteArray()
 	dirty = true
 
 
+## Replace the whole atlas (drops the undo history).
 func set_data(bytes: PackedByteArray) -> void:
 	if bytes.size() == data.size():
 		data = bytes.duplicate()
+		clear_history()
 		dirty = true
+
+
+# --- Undo ------------------------------------------------------------------------
+
+func can_undo() -> bool:
+	return not _history.is_empty()
+
+
+func undo_count() -> int:
+	return _history.size()
+
+
+## Compressed bytes held by the history.
+func history_bytes() -> int:
+	return _history_bytes
+
+
+func clear_history() -> void:
+	_history.clear()
+	_history_bytes = 0
+
+
+## Take back the newest step (stroke or Clear all). False if none.
+func undo() -> bool:
+	if _in_stroke:
+		end_stroke()
+	if _history.is_empty():
+		return false
+	var step: Dictionary = _history.pop_back()
+	_history_bytes -= (step["bytes"] as PackedByteArray).size()
+	var raw: PackedByteArray = (step["bytes"] as PackedByteArray).decompress(int(step["raw"]), FileAccess.COMPRESSION_DEFLATE)
+	# Native blits: the atlas as an Image, each saved tile written back.
+	var atlas: Image = Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	var at: int = 0
+	for t: int in step["tiles"] as PackedInt32Array:
+		var r: Rect2i = tile_rect(t)
+		var n: int = r.size.x * r.size.y * 4
+		var tile: Image = Image.create_from_data(r.size.x, r.size.y, false, Image.FORMAT_RGBA8, raw.slice(at, at + n))
+		atlas.blit_rect(tile, Rect2i(Vector2i.ZERO, r.size), r.position)
+		at += n
+	data = atlas.get_data()
+	dirty = true
+	return true
+
+
+## Texel rectangle of tile `t`.
+func tile_rect(t: int) -> Rect2i:
+	var tx: int = (t % _tiles_per_row) * UNDO_TILE
+	var ty: int = (t / _tiles_per_row) * UNDO_TILE
+	return Rect2i(tx, ty, mini(UNDO_TILE, size - tx), mini(UNDO_TILE, size - ty))
+
+
+func tile_count() -> int:
+	return _tile_touched.size()
+
+
+## Record the touched tiles' bytes from `before` as one undo step. Tiles a
+## stroke did not actually change are left out; with `skip_empty` (Clear
+## all, recorded before wiping) tiles that are all zero are left out instead.
+func _push_step(before: PackedByteArray, skip_empty: bool = false) -> bool:
+	var src: Image = Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, before)
+	var now: Image = null if skip_empty else Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	var tiles := PackedInt32Array()
+	var raw := PackedByteArray()
+	var zero := PackedByteArray()
+	for t: int in _tile_touched.size():
+		if _tile_touched[t] == 0:
+			continue
+		var bytes: PackedByteArray = src.get_region(tile_rect(t)).get_data()
+		if skip_empty:
+			if zero.size() != bytes.size():
+				zero.resize(bytes.size())
+				zero.fill(0)
+			if bytes == zero:
+				continue
+		elif now.get_region(tile_rect(t)).get_data() == bytes:
+			continue
+		tiles.append(t)
+		raw.append_array(bytes)
+	_tile_touched.fill(0)
+	if tiles.is_empty():
+		return false
+	var packed: PackedByteArray = raw.compress(FileAccess.COMPRESSION_DEFLATE)
+	_history.append({"tiles": tiles, "raw": raw.size(), "bytes": packed})
+	_history_bytes += packed.size()
+	while _history.size() > MAX_UNDO or (_history_bytes > MAX_UNDO_BYTES and _history.size() > 1):
+		var old: Dictionary = _history.pop_front()
+		_history_bytes -= (old["bytes"] as PackedByteArray).size()
+	return true
 
 
 ## Push changes to the GPU texture (call at most a few dozen times a second).
@@ -162,12 +276,18 @@ func begin_stroke(tool: Tool, ink: Color) -> void:
 	_absorb = absorbance(ink)
 	_snapshot = data.duplicate()
 	_stroke_weight.fill(0)
+	_tile_touched.fill(0)
 	_in_stroke = true
 
 
-func end_stroke() -> void:
+## Finish the stroke; one undo step if it changed any ink. Returns true then.
+func end_stroke() -> bool:
+	var recorded: bool = false
+	if _in_stroke and not _snapshot.is_empty():
+		recorded = _push_step(_snapshot)
 	_in_stroke = false
 	_snapshot = PackedByteArray()
+	return recorded
 
 
 func in_stroke() -> bool:
@@ -245,6 +365,7 @@ func _apply(t: int, w: float) -> bool:
 	if wq <= _stroke_weight[t]:
 		return false
 	_stroke_weight[t] = wq
+	_tile_touched[((t / size) / UNDO_TILE) * _tiles_per_row + (t % size) / UNDO_TILE] = 1
 	var wf: float = float(wq) / 255.0
 	var i: int = t * 4
 	var scale: float = OD_MAX / 255.0

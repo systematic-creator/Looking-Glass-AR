@@ -140,6 +140,7 @@ func _on_board_ready() -> void:
 	ui.brush_picked.connect(set_brush)
 	ui.clear_confirmed.connect(clear_all)
 	ui.focus_pressed.connect(toggle_focus)
+	ui.undo_pressed.connect(undo)
 	ui.set_shown(false)
 	var first: StringName = session_model
 	if find_entry(first) == null and not entries.is_empty():
@@ -318,6 +319,7 @@ func select_model(id: StringName) -> bool:
 	if ui != null:
 		ui.show_state(id, mode, tool, colour_index, brush_index)
 		_show_scale()
+	_refresh_undo()
 	_update_status()
 	return true
 
@@ -452,7 +454,31 @@ func clear_all() -> void:
 	_end_stroke()
 	ink.clear()
 	ink.upload()
+	_refresh_undo()
 	_update_status()
+
+
+## Take back the current model's last stroke (or Clear all). Each model
+## keeps its own history (up to TattooInkLayer.MAX_UNDO steps) for the
+## session, across model switches.
+func undo() -> bool:
+	if ink == null:
+		return false
+	_end_stroke()
+	var done: bool = ink.undo()
+	if done:
+		ink.upload()
+	_refresh_undo()
+	return done
+
+
+func undo_count() -> int:
+	return ink.undo_count() if ink != null else 0
+
+
+func _refresh_undo() -> void:
+	if ui != null:
+		ui.show_undo(undo_count())
 
 
 func _update_status() -> void:
@@ -562,6 +588,7 @@ func _end_stroke() -> void:
 	if ink != null:
 		ink.end_stroke()
 		ink.upload()
+	_refresh_undo()
 
 
 ## Paint a stroke through model-space points (tests, screenshots, demos):

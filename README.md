@@ -523,7 +523,8 @@ Solid style toggle),
 colour mixing, UV seams, curvature, facing, the model contract and glTF
 drop-in, the tall box, ray-stroke / pinch hooks, touch strokes, rotate,
 scale and the box following, Focus, ink permanence across viewpoints, zoom,
-scale, model switches, pause / resume and relaunch, Clear all, AR strokes on
+scale, model switches, pause / resume and relaunch, Clear all, multi-level
+undo (dirty-tile history, per model, Clear all undo, the Undo button), AR strokes on
 a table miniature).
 Leaked-RID messages at exit are harmless.
 

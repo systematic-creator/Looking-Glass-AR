@@ -3,8 +3,9 @@ extends "res://tests/surface_tests.gd"
 ## painting on the real mesh (seams, curvature, facing), the model contract
 ## and loader (glTF drop-in), the platform's tall box and ray-stroke /
 ## pinch hooks, and the game in the host: touch strokes, rotate, scale,
-## focus, clear-all confirmation and ink permanence across viewpoints,
-## zoom, scale, model switches, pause / resume and relaunch.
+## focus, clear-all confirmation, undo (dirty-tile history, per model) and
+## ink permanence across viewpoints, zoom, scale, model switches,
+## pause / resume and relaunch.
 ## Run: godot --headless --path . res://tests/tattoo_tests.tscn
 
 const ID: StringName = &"tattoo_studio"
@@ -32,6 +33,8 @@ func run_tests() -> void:
 	await _test_focus()
 	await _test_permanence()
 	await _test_clear_confirm()
+	_test_undo_layer()
+	await _test_undo_in_game()
 	await _test_ar_miniature_on_table()
 	_reset_session()
 
@@ -639,3 +642,130 @@ func _test_ar_miniature_on_table() -> void:
 	check("AR: and never changes the tattoo", game.ink.data == snapshot)
 	await free_host(host)
 	ARSession.clear_saved_area()
+
+
+# --- Undo --------------------------------------------------------------------------
+
+func _dab(ink: TattooInkLayer, x: float, y: float, r: float = 0.01, tool_used: TattooInkLayer.Tool = TattooInkLayer.Tool.NEEDLE) -> bool:
+	var hit: Dictionary = _hit_front(male_paint, x, y)
+	ink.begin_stroke(tool_used, Color(0.07, 0.07, 0.08))
+	ink.stamp(male_paint, hit["position"], hit["normal"], r)
+	return ink.end_stroke()
+
+
+func _test_undo_layer() -> void:
+	var ink := TattooInkLayer.new(1024)
+	check("undo: nothing to undo on fresh skin", not ink.can_undo() and not ink.undo() and ink.undo_count() == 0)
+	var clean: PackedByteArray = ink.data.duplicate()
+	check("undo: a stroke that inks is one step", _dab(ink, 0.0, 1.2) and ink.undo_count() == 1)
+	var after_a: PackedByteArray = ink.data.duplicate()
+	_dab(ink, 0.0, 1.2)
+	check("undo: going over again is another step (deeper ink)", ink.undo_count() == 2 and ink.data != after_a)
+	check("undo: takes back the last stroke exactly", ink.undo() and ink.data == after_a and ink.dirty)
+	check("undo: then the one before, back to bare skin", ink.undo() and ink.data == clean and not ink.can_undo())
+	# Eraser strokes are undone too.
+	_dab(ink, 0.03, 1.15, 0.012)
+	_dab(ink, 0.03, 1.15, 0.012)
+	var inked: PackedByteArray = ink.data.duplicate()
+	_dab(ink, 0.03, 1.15, 0.03, TattooInkLayer.Tool.ERASER)
+	check("undo: an eraser stroke is undone (ink comes back)", ink.inked_texels() == 0 and ink.undo() and ink.data == inked)
+	# A stroke that changes nothing (eraser on bare skin) adds no step.
+	var count: int = ink.undo_count()
+	check("undo: a stroke that changes nothing adds no step", not _dab(ink, -0.05, 1.0, 0.01, TattooInkLayer.Tool.ERASER) and ink.undo_count() == count)
+	# Dirty-tile diffs: a small dab stores only a few 64x64 tiles, compressed.
+	var small := TattooInkLayer.new(1024)
+	_dab(small, 0.0, 1.2, 0.008)
+	var step: Dictionary = small._history[0]
+	var tiles: int = (step["tiles"] as PackedInt32Array).size()
+	check("undo: a dab keeps only its dirty tiles (not the whole atlas)", tiles >= 1 and tiles <= 6 and int(step["raw"]) == tiles * 64 * 64 * 4)
+	check("undo: steps are compressed (a dab costs < 8 KB)", small.history_bytes() > 0 and small.history_bytes() < 8 * 1024)
+	# Multi-level, capped at MAX_UNDO steps (oldest dropped).
+	var deep := TattooInkLayer.new(512)
+	var states: Array[PackedByteArray] = [deep.data.duplicate()]
+	for i: int in 25:
+		_dab(deep, lerpf(-0.08, 0.08, float(i) / 24.0), 1.1 + 0.004 * float(i % 5), 0.008)
+		states.append(deep.data.duplicate())
+	check("undo: keeps the last 20 strokes", deep.undo_count() == TattooInkLayer.MAX_UNDO)
+	var exact: bool = true
+	for k: int in TattooInkLayer.MAX_UNDO:
+		deep.undo()
+		exact = exact and deep.data == states[24 - k]
+	check("undo: 20 undos step back through each stroke exactly", exact and not deep.can_undo() and deep.data == states[5])
+	# Clear all is one undoable step; clearing bare skin is not.
+	var c := TattooInkLayer.new(1024)
+	_dab(c, 0.0, 1.2)
+	_dab(c, 0.05, 1.0)
+	var before_clear: PackedByteArray = c.data.duplicate()
+	c.clear()
+	check("undo: Clear all is undoable (only inked tiles saved)", c.inked_texels() == 0 and c.undo_count() == 3 and (c._history[2]["tiles"] as PackedInt32Array).size() < c.tile_count() / 4)
+	check("undo: undoing Clear all brings every tattoo back", c.undo() and c.data == before_clear)
+	var e := TattooInkLayer.new(512)
+	e.clear()
+	check("undo: Clear all on bare skin adds no step", e.undo_count() == 0)
+	c.set_data(clean)
+	check("undo: replacing the atlas drops the history", not c.can_undo())
+	# Memory cap.
+	check("undo: history is capped in memory (16 MB compressed)", TattooInkLayer.MAX_UNDO_BYTES == 16 * 1024 * 1024 and deep.history_bytes() == 0)
+
+
+func _test_undo_in_game() -> void:
+	_reset_session()
+	var host: GameHost = await make_host(ID)
+	var game: TattooStudioGame = host.game as TattooStudioGame
+	host.orbit_camera.yaw = 0.0
+	host.orbit_camera.pitch = deg_to_rad(-8.0)
+	host.orbit_camera.distance = 2.4
+	host.orbit_camera.orbit(Vector2.ZERO)
+	await frames(2)
+	var undo: Button = game.ui.undo_button
+	check("undo UI: Undo sits in the tool panel, greyed out with nothing to undo", (
+		undo != null and game.ui.right_panel.is_ancestor_of(undo) and undo.disabled and undo.modulate.a < 0.6
+	))
+	var clean: PackedByteArray = game.ink.data.duplicate()
+	_stroke(_chest_line(host, game, 1.25))
+	await frames(1)
+	var after_one: PackedByteArray = game.ink.data.duplicate()
+	_stroke(_chest_line(host, game, 1.18))
+	await frames(1)
+	check("undo UI: two finger strokes = two steps, button live", game.undo_count() == 2 and not undo.disabled and undo.text.contains("(2)"))
+	var strokes: int = game.strokes
+	var at_button: Vector2 = undo.get_global_rect().get_center()
+	_stroke([at_button, at_button + Vector2(-30, 4), at_button + Vector2(-60, 8)])
+	await frames(1)
+	check("undo UI: touching the Undo button never paints", game.strokes == strokes and game.is_over_game_ui(at_button) and game.undo_count() == 2)
+	undo.pressed.emit()
+	check("undo UI: Undo takes back the last stroke only", game.ink.data == after_one and game.undo_count() == 1 and undo.text.contains("(1)"))
+	undo.pressed.emit()
+	check("undo UI: and the first; then greyed out again", game.ink.data == clean and undo.disabled and not game.undo())
+	# Undo in the middle of a stroke ends it and takes it back.
+	game.paint_model_points([Vector3(-0.05, 1.25, 0.11), Vector3(0.05, 1.25, 0.11)], Vector3(0, 0, -1))
+	var mid_before: PackedByteArray = game.ink.data.duplicate()
+	var xf: Transform3D = game.model_transform()
+	var dir: Vector3 = xf.basis * Vector3(0, 0, -1)
+	game._on_ray_stroke(LGGame.StrokePhase.BEGIN, xf * Vector3(0.0, 1.1, 0.11) - dir * 2.0, dir)
+	game._on_ray_stroke(LGGame.StrokePhase.MOVE, xf * Vector3(0.04, 1.1, 0.11) - dir * 2.0, dir)
+	check("undo: mid-stroke ink is there", game.ink.in_stroke() and game.ink.data != mid_before)
+	game.undo()
+	check("undo: Undo mid-stroke ends that stroke and takes it back", not game.ink.in_stroke() and game.ink.data == mid_before and game.undo_count() == 1)
+	# Per model.
+	var male_ink: PackedByteArray = game.ink.data.duplicate()
+	game.select_model(&"female")
+	check("undo per model: a fresh model has nothing to undo", game.undo_count() == 0 and undo.disabled)
+	game.paint_model_points([Vector3(-0.04, 1.2, 0.1), Vector3(0.04, 1.2, 0.1)], Vector3(0, 0, -1))
+	check("undo per model: the female's stroke is her own step", game.undo_count() == 1)
+	game.undo()
+	check("undo per model: undoing on her leaves the male alone", game.ink.inked_texels() == 0 and (TattooStudioGame.session_layers[&"male"] as TattooInkLayer).data == male_ink)
+	game.select_model(&"male")
+	check("undo per model: back on the male, his history is still there", game.undo_count() == 1 and not undo.disabled and game.ink.data == male_ink)
+	# Clear all, then Undo brings it back.
+	game.ui.clear_button.pressed.emit()
+	game.ui.confirm_yes.pressed.emit()
+	check("undo: Clear all is one more step", game.ink.inked_texels() == 0 and game.undo_count() == 2)
+	undo.pressed.emit()
+	check("undo: Undo after Clear all restores the tattoo", game.ink.data == male_ink and game.undo_count() == 1)
+	await free_host(host)
+	var host2: GameHost = await make_host(ID)
+	var game2: TattooStudioGame = host2.game as TattooStudioGame
+	check("undo: the history survives leaving and reopening (this session)", game2.undo_count() == 1 and not game2.ui.undo_button.disabled)
+	await free_host(host2)
+	_reset_session()

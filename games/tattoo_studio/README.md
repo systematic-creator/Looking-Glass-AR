@@ -25,7 +25,17 @@ Focus close-up. It is also the test bed for new 3D models (see
   up 3x around that spot (the spot itself does not move) for close work
   without leaning in; the AR camera clips anything nearer than 0.1 m. Pinch
   changes the magnification (1.5-6x). **True size** eases back.
-- **Clear all…** asks before removing every tattoo on the current model.
+- **↶ Undo (n)** (under Needle / Eraser) takes back the last stroke: one
+  press-to-release with the needle or the eraser, or a Clear all. Up to 20
+  steps per model, kept for the session across model switches and leaving
+  the game; greyed out when there is nothing to undo. Each step stores only
+  the 64x64-texel tiles of the ink atlas the stroke changed (their bytes
+  before it), deflate-compressed: a typical stroke costs a few KB, and the
+  history is capped at 16 MB per model (the oldest steps go first). A touch
+  on the button never paints (`is_over_game_ui`). Undo mid-stroke ends that
+  stroke and takes it back.
+- **Clear all…** asks before removing every tattoo on the current model (and
+  can be undone: the inked tiles go on the undo history first).
 - Tattoos persist per model for the app session: switching models, pausing,
   unlocking / re-placing and leaving / reopening the game keep them.
 

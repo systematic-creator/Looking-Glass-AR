@@ -1,8 +1,8 @@
 class_name TattooStudioUI
 extends CanvasLayer
 ## Tattoo Studio's on-screen tools. Left: model picker and model size.
-## Right: Draw / Rotate, Needle / Eraser, ink colours, needle size, Clear all
-## (asks first). The game asks is_over() so touches here never paint.
+## Right: Draw / Rotate, Needle / Eraser, Undo (greyed when there is nothing
+## to take back), ink colours, needle size, Clear all (asks first). The game asks is_over() so touches here never paint.
 
 signal model_picked(id: StringName)
 signal model_scale_changed(value: float)
@@ -12,6 +12,7 @@ signal colour_picked(index: int)
 signal brush_picked(index: int)
 signal clear_confirmed()
 signal focus_pressed()
+signal undo_pressed()
 
 const PANEL_TOP: float = 110.0
 const MARGIN: float = 16.0
@@ -29,6 +30,7 @@ var scale_slider: HSlider
 var scale_label: Label
 var clear_button: Button
 var focus_button: Button
+var undo_button: Button
 var confirm_label: Label
 var confirm_yes: Button
 var confirm_no: Button
@@ -87,6 +89,12 @@ func build(models: Array[TattooModelEntry], palette: Array, brushes: Array) -> v
 		tool_buttons.append(b)
 		tool_row.add_child(b)
 	right.add_child(tool_row)
+	undo_button = _button("↶ Undo", Vector2(196, 52), null)
+	undo_button.name = "UndoButton"
+	undo_button.tooltip_text = "Take back the last stroke (or Clear all)"
+	undo_button.pressed.connect(func() -> void: undo_pressed.emit())
+	right.add_child(undo_button)
+	show_undo(0)
 	right.add_child(_caption("Ink"))
 	var grid := GridContainer.new()
 	grid.columns = 3
@@ -191,6 +199,15 @@ func show_state(model_id: StringName, mode: int, tool: int, colour: int, brush: 
 	_press(tool_buttons, tool)
 	_press(colour_buttons, colour)
 	_press(brush_buttons, brush)
+
+
+## Undo button: "Undo (n)" while there are steps, greyed out when none.
+func show_undo(count: int) -> void:
+	if undo_button == null:
+		return
+	undo_button.disabled = count <= 0
+	undo_button.text = "↶ Undo (%d)" % count if count > 0 else "↶ Undo"
+	undo_button.modulate = Color(1, 1, 1, 1.0 if count > 0 else 0.45)
 
 
 ## Focus button label: picking a spot / magnified / off.
