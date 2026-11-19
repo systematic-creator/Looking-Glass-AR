@@ -46,6 +46,11 @@ func board_surface_height() -> float:
 	return SLAB_TOP
 
 
+func describe_point(point: Vector3) -> String:
+	var index: int = cell_at(point)
+	return "cell %d" % index if index >= 0 else "off-grid"
+
+
 func box_outline_while_playing() -> float:
 	return OUTLINE_WHILE_PLAYING
 

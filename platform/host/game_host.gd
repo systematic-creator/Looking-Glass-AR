@@ -52,6 +52,25 @@ var _tap_marker_time: float = 0.0
 var taps_seen: int = 0
 var taps_on_board: int = 0
 var last_tap_point: Variant = null
+## Last tap, for the debug line / tap probe: screen px, viewport, window,
+## content scale, board hit, reprojection error, the game's description.
+var last_tap_info: Dictionary = {}
+## Draw the tap probe (touch dot + reprojected hit) on every tap. On while
+## the AR debug line is shown.
+var tap_probe_enabled: bool = false
+var tap_probe: TapProbe
+## Small corner toggle for the AR debug line (always reachable in game).
+var debug_button: Button
+
+const TAP_SLOP_INCHES: float = 0.35
+const MAX_TAP_SLOP_PX: float = 120.0
+## Hold the status line (top right) this long to toggle the debug line.
+const DEBUG_LONG_PRESS_SECONDS: float = 1.5
+var _status_press_time: float = -1.0
+## Glow clipping state: the play-area version / anchor pose last applied.
+var _clip_version: int = -1
+var _clip_anchor: Transform3D = Transform3D()
+var _status_press_pos: Vector2 = Vector2.ZERO
 
 
 func _ready() -> void:
@@ -65,6 +84,7 @@ func _ready() -> void:
 	orbit_camera = OrbitCamera.new()
 	add_child(orbit_camera)
 	_build_hud()
+	Holo.set_clip(null, PackedVector2Array())
 	if not _load_game():
 		_status_label.text = load_error
 		orbit_camera.camera.current = true
@@ -86,6 +106,8 @@ func _ready() -> void:
 	session.board_lock_changed.connect(_on_board_lock_changed)
 	add_child(session)
 	session.setup(world_anchor, pivot, orbit_camera.camera, environment)
+	if session.hud != null:
+		session.hud.debug_toggled.connect(_on_debug_toggled)
 	set_box_height(session.placement.box_height)
 	_on_board_lock_changed(session.is_board_locked())
 	_gestures.tap_slop_px = tap_slop_for_screen()
@@ -158,8 +180,9 @@ func pick_height() -> float:
 ## The board-space ray under a screen point: [origin, unit direction].
 static func screen_ray_in_board(camera: Camera3D, board: Node3D, screen: Vector2) -> Array[Vector3]:
 	var inverse: Transform3D = board.global_transform.affine_inverse()
-	var origin: Vector3 = inverse * camera.project_ray_origin(screen)
-	var direction: Vector3 = (inverse.basis * camera.project_ray_normal(screen)).normalized()
+	var ray: Array[Vector3] = ScreenRay.ray(camera, screen)
+	var origin: Vector3 = inverse * ray[0]
+	var direction: Vector3 = (inverse.basis * ray[1]).normalized()
 	return [origin, direction]
 
 
@@ -216,7 +239,7 @@ static func screen_to_board(camera: Camera3D, board: Node3D, screen: Vector2, su
 		return null
 	var up: Vector3 = board.global_transform.basis.y.normalized()
 	var ground := Plane(up, board.to_global(Vector3(0.0, surface_height, 0.0)))
-	var hit: Variant = ground.intersects_ray(camera.project_ray_origin(screen), camera.project_ray_normal(screen))
+	var hit: Variant = ScreenRay.hit_plane(camera, screen, ground)
 	if hit == null:
 		return null
 	var local: Vector3 = board.to_local(hit as Vector3)
@@ -230,22 +253,27 @@ func active_camera() -> Camera3D:
 	return orbit_camera.camera
 
 
-## Tap slop in viewport pixels for this screen: about 4 mm of finger wobble
-## (phones have ~400+ dpi, and the viewport is scaled from 720p).
+## Tap slop in viewport pixels for this screen: about 9 mm of finger roll
+## (a fingertip contact patch is ~8-10 mm; 4 mm turned real taps into
+## drags). Phones have ~400+ dpi, and the viewport is scaled from 720p.
 func tap_slop_for_screen() -> float:
-	var dpi: float = float(DisplayServer.screen_get_dpi())
-	var window_height: float = float(DisplayServer.window_get_size().y)
-	var view_height: float = get_viewport().get_visible_rect().size.y
+	return tap_slop_px_for(float(DisplayServer.screen_get_dpi()), float(DisplayServer.window_get_size().y),
+		get_viewport().get_visible_rect().size.y)
+
+
+static func tap_slop_px_for(dpi: float, window_height: float, view_height: float) -> float:
 	if dpi <= 0.0 or window_height <= 0.0 or view_height <= 0.0:
 		return GestureTracker.TAP_SLOP_PX
-	var physical_px: float = dpi * 0.16
-	return clampf(physical_px * view_height / window_height, GestureTracker.TAP_SLOP_PX, 72.0)
+	var physical_px: float = dpi * TAP_SLOP_INCHES
+	return clampf(physical_px * view_height / window_height, GestureTracker.TAP_SLOP_PX, MAX_TAP_SLOP_PX)
 
 
 ## True if a screen point is on platform UI (back button, AR buttons, the
 ## calibration banner), so the touch is not a board touch.
 func is_over_platform_ui(screen: Vector2) -> bool:
 	if _back_button != null and _back_button.visible and _back_button.get_global_rect().has_point(screen):
+		return true
+	if debug_button != null and debug_button.visible and debug_button.get_global_rect().has_point(screen):
 		return true
 	return session != null and session.hud != null and session.hud.is_over_ui(screen)
 
@@ -264,6 +292,7 @@ func _input(event: InputEvent) -> void:
 		return
 	if not (event is InputEventScreenTouch or event is InputEventScreenDrag):
 		return
+	_track_status_press(event)
 	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
 		if is_over_platform_ui((event as InputEventScreenTouch).position):
 			return
@@ -282,8 +311,10 @@ func route_gesture(gesture: Dictionary) -> void:
 			taps_seen += 1
 			var ray: Array[Vector3] = screen_ray_in_board(camera, game, gesture["position"] as Vector2)
 			game.lg_box_ray(ray[0], ray[1])
-			var point: Variant = screen_to_board(camera, game, gesture["position"] as Vector2, pick_height())
+			var screen: Vector2 = gesture["position"] as Vector2
+			var point: Variant = screen_to_board(camera, game, screen, pick_height())
 			last_tap_point = point
+			_record_tap(camera, screen, point)
 			if point != null:
 				taps_on_board += 1
 				_show_tap_marker(point as Vector3)
@@ -303,6 +334,15 @@ func route_gesture(gesture: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	_update_glow_clip()
+	if _status_press_time >= 0.0:
+		_status_press_time += delta
+		if _status_press_time >= DEBUG_LONG_PRESS_SECONDS:
+			_status_press_time = -1.0
+			_gestures.reset()
+			toggle_debug()
+	if debug_button != null:
+		debug_button.visible = session != null and session.is_ar() and session.hud != null
 	if _tap_marker != null and _tap_marker.visible:
 		_tap_marker_time -= delta
 		var t: float = clampf(_tap_marker_time / 0.5, 0.0, 1.0)
@@ -333,14 +373,109 @@ func _show_tap_marker(point: Vector3) -> void:
 	_tap_marker_time = 0.5
 
 
+func _record_tap(camera: Camera3D, screen: Vector2, point: Variant) -> void:
+	var info: Dictionary = {
+		"screen": screen,
+		"viewport": get_viewport().get_visible_rect().size,
+		"window": Vector2(get_window().size),
+		"content_scale": get_tree().root.get_final_transform().x.x,
+		"xr_ray": ScreenRay.uses_xr_projection(camera),
+	}
+	var reprojected: Variant = null
+	if point is Vector3:
+		var world: Vector3 = game.to_global((point as Vector3) + Vector3(0.0, pick_height(), 0.0))
+		if not camera.is_position_behind(world):
+			reprojected = camera.unproject_position(world)
+			info["error_px"] = (reprojected as Vector2).distance_to(screen)
+		info["hit"] = point
+		info["what"] = game.describe_point(point as Vector3)
+	last_tap_info = info
+	if tap_probe_enabled and tap_probe != null:
+		tap_probe.show_tap(screen, reprojected)
+
+
+## One debug-line fragment for the last tap.
+static func tap_debug_text(info: Dictionary) -> String:
+	if info.is_empty():
+		return ""
+	var s: Vector2 = info["screen"] as Vector2
+	var vp: Vector2 = info["viewport"] as Vector2
+	var win: Vector2 = info["window"] as Vector2
+	var text: String = "tap px %d,%d vp %dx%d win %dx%d cs %.2f %s" % [
+		roundi(s.x), roundi(s.y), roundi(vp.x), roundi(vp.y), roundi(win.x), roundi(win.y),
+		float(info["content_scale"]), "xr-ray" if bool(info["xr_ray"]) else "cam-ray"]
+	if info.has("hit"):
+		var p: Vector3 = info["hit"] as Vector3
+		text += " hit %.3f,%.3f" % [p.x, p.z]
+		if info.has("error_px"):
+			text += " err %.1fpx" % float(info["error_px"])
+		if not String(info.get("what", "")).is_empty():
+			text += " " + String(info["what"])
+	else:
+		text += " miss"
+	return text
+
+
 func _update_tap_debug() -> void:
 	if session == null:
 		return
-	var where: String = "miss"
-	if last_tap_point is Vector3:
-		var p: Vector3 = last_tap_point as Vector3
-		where = "%.2f,%.2f" % [p.x, p.z]
-	session.extra_debug = "taps %d/%d last %s" % [taps_on_board, taps_seen, where]
+	session.extra_debug = "taps %d/%d · %s" % [taps_on_board, taps_seen, tap_debug_text(last_tap_info)]
+
+
+func set_tap_probe(enabled: bool) -> void:
+	tap_probe_enabled = enabled
+	if tap_probe != null and not enabled:
+		tap_probe.clear()
+
+
+## Show / hide the AR debug line (and the tap probe with it).
+func toggle_debug() -> void:
+	if session == null or session.hud == null:
+		return
+	session.hud.toggle_debug()
+
+
+func _on_debug_toggled(on: bool) -> void:
+	set_tap_probe(on)
+	session.refresh_debug()
+
+
+## Keep the game's glows (Holo disc materials) inside the play area's real
+## edges: re-clip when the area changes or the anchor moves (> 1 mm).
+func _update_glow_clip() -> void:
+	if session == null or game == null:
+		return
+	var anchor: Transform3D = world_anchor.global_transform
+	var moved: bool = anchor.origin.distance_to(_clip_anchor.origin) > 0.001 or not anchor.basis.is_equal_approx(_clip_anchor.basis)
+	if session.region_version == _clip_version and not moved:
+		return
+	_clip_version = session.region_version
+	_clip_anchor = anchor
+	Holo.set_clip(game, session.play_area_world())
+
+
+## Long-press on the status line: a press inside it that stays put for
+## DEBUG_LONG_PRESS_SECONDS toggles the debug line.
+func _track_status_press(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		var t: InputEventScreenTouch = event
+		if t.pressed and t.index == 0 and _status_label.visible and _status_hit_rect().has_point(t.position):
+			_status_press_time = 0.0
+			_status_press_pos = t.position
+		elif not t.pressed:
+			_status_press_time = -1.0
+	elif event is InputEventScreenDrag and _status_press_time >= 0.0:
+		if (event as InputEventScreenDrag).position.distance_to(_status_press_pos) > _gestures.tap_slop_px:
+			_status_press_time = -1.0
+
+
+## The status line's touch area (at least 64 px tall, the text's width).
+func _status_hit_rect() -> Rect2:
+	var rect: Rect2 = _status_label.get_global_rect()
+	var text_width: float = _status_label.get_theme_font("font").get_string_size(
+		_status_label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, _status_label.get_theme_font_size("font_size")).x
+	var width: float = clampf(text_width + 32.0, 120.0, rect.size.x)
+	return Rect2(Vector2(rect.end.x - width, rect.position.y - 12.0), Vector2(width, maxf(rect.size.y, 40.0) + 24.0))
 
 
 # --- Scene ------------------------------------------------------------------------
@@ -391,6 +526,19 @@ func _build_hud() -> void:
 	_status_label.add_theme_color_override("font_outline_color", Color.BLACK)
 	_status_label.add_theme_constant_override("outline_size", 6)
 	_hud.add_child(_status_label)
+	debug_button = Button.new()
+	debug_button.name = "DebugButton"
+	debug_button.text = "dbg"
+	debug_button.focus_mode = Control.FOCUS_NONE
+	debug_button.add_theme_font_size_override("font_size", 16)
+	debug_button.modulate = Color(1, 1, 1, 0.45)
+	debug_button.position = Vector2(20.0, 96.0)
+	debug_button.custom_minimum_size = Vector2(64.0, 48.0)
+	debug_button.visible = false
+	debug_button.pressed.connect(toggle_debug)
+	_hud.add_child(debug_button)
+	tap_probe = TapProbe.new()
+	_hud.add_child(tap_probe)
 
 
 func get_status_text() -> String:

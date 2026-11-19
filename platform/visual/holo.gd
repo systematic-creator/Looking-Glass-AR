@@ -47,9 +47,16 @@ static func line_material(color: Color, intensity: float = 1.0) -> ShaderMateria
 
 
 ## Flat glow for a PlaneMesh (see holo_disc.gdshader for the parameters).
+## The play area's world x/z outline every glow is clipped to (set by the
+## platform: Holo.set_clip). Empty = no clip.
+static var clip_polygon: PackedVector2Array = PackedVector2Array()
+const MAX_CLIP_POINTS: int = 16
+
+
 static func disc_material(color: Color, core: float = 0.45, ring_radius: float = 0.9, ring: float = 0.7, grid: float = 0.0, square: float = 0.0) -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
 	mat.shader = DISC_SHADER
+	_apply_clip(mat)
 	mat.set_shader_parameter("color", color)
 	mat.set_shader_parameter("core", core)
 	mat.set_shader_parameter("ring_radius", ring_radius)
@@ -111,6 +118,36 @@ static func bar(from: Vector3, to: Vector3, thickness: float, mat: Material) -> 
 
 
 ## Set a shader parameter on every ShaderMaterial override under `root`.
+## Clip every glow (holo_disc material) under `root` - and every glow made
+## later - to a world x/z polygon (at most 16 points; empty = no clip).
+static func set_clip(root: Node, world_polygon: PackedVector2Array) -> void:
+	clip_polygon = world_polygon.duplicate() if world_polygon.size() <= MAX_CLIP_POINTS else EdgeFitter.simplify(world_polygon, MAX_CLIP_POINTS)
+	if root != null:
+		_clip_tree(root)
+
+
+static func _clip_tree(node: Node) -> void:
+	if node is GeometryInstance3D:
+		var mat: Material = (node as GeometryInstance3D).material_override
+		if mat is ShaderMaterial and (mat as ShaderMaterial).shader == DISC_SHADER:
+			_apply_clip(mat as ShaderMaterial)
+	for child: Node in node.get_children():
+		_clip_tree(child)
+
+
+static func _apply_clip(mat: ShaderMaterial) -> void:
+	var points := PackedVector2Array(clip_polygon)
+	var count: int = points.size() if points.size() >= 3 else 0
+	points.resize(MAX_CLIP_POINTS)
+	mat.set_shader_parameter("clip_count", count)
+	mat.set_shader_parameter("clip_points", points)
+
+
+## True if a world x/z point is inside the current clip (or there is none).
+static func clip_contains(world_xz: Vector2) -> bool:
+	return clip_polygon.size() < 3 or Geometry2D.is_point_in_polygon(world_xz, clip_polygon)
+
+
 static func set_param(root: Node, param: StringName, value: Variant) -> void:
 	if root is GeometryInstance3D:
 		var mat: Material = (root as GeometryInstance3D).material_override

@@ -110,6 +110,12 @@ func _on_box_ray(_origin: Vector3, _direction: Vector3) -> void:
 	pass
 
 
+## Short text naming a board-space point for the AR debug line / tap probe
+## (e.g. "cell 4"). Optional.
+func describe_point(_point: Vector3) -> String:
+	return ""
+
+
 ## How visible the platform's box outline stays while playing: 0 hidden
 ## (default), up to 1 (as bright as while adjusting).
 func box_outline_while_playing() -> float:

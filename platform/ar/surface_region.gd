@@ -7,7 +7,7 @@ extends RefCounted
 ## Pure geometry (no nodes), unit-tested headless: footprint-in-polygon
 ## tests, clamping a board offset inside, and auto-fitting a board.
 
-enum Source { NONE, PLANE, TRACED }
+enum Source { NONE, PLANE, TRACED, FITTED }
 
 ## Keep the board this far inside the edge (metres).
 const EDGE_MARGIN: float = 0.01

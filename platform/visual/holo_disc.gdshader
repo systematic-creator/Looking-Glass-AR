@@ -17,8 +17,37 @@ uniform float grid_cells = 12.0;
 uniform float pulse : hint_range(0.0, 1.0) = 0.12;
 // 0 = round falloff, 1 = square (board-shaped) falloff.
 uniform float square : hint_range(0.0, 1.0) = 0.0;
+// Play-area clip (world x/z polygon, set by the platform): nothing is drawn
+// outside the fitted table edges. clip_count < 3 = no clip.
+uniform int clip_count = 0;
+uniform vec2 clip_points[16];
+
+varying vec2 world_xz;
+
+void vertex() {
+	world_xz = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
+}
+
+bool inside_clip(vec2 q) {
+	bool inside = false;
+	int n = min(clip_count, 16);
+	for (int i = 0; i < 16; i++) {
+		if (i >= n) {
+			break;
+		}
+		vec2 a = clip_points[i];
+		vec2 b = clip_points[(i + 1) % n];
+		if (((a.y > q.y) != (b.y > q.y)) && (q.x < (b.x - a.x) * (q.y - a.y) / (b.y - a.y) + a.x)) {
+			inside = !inside;
+		}
+	}
+	return inside;
+}
 
 void fragment() {
+	if (clip_count >= 3 && !inside_clip(world_xz)) {
+		discard;
+	}
 	vec2 p = UV * 2.0 - 1.0;
 	float r = mix(length(p), max(abs(p.x), abs(p.y)), square);
 	float fade = clamp(1.0 - r, 0.0, 1.0);

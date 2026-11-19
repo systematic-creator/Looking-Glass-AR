@@ -28,12 +28,16 @@ platform/
   launcher/               catalog screen (main scene): one card per game
   host/game_host.gd       runs one game: board scene, AR session, input routing
   host/orbit_camera.gd    touch / desktop camera for the non-AR fallback
+  host/tap_probe.gd       debug overlay: touch dot + reprojected hit ring
   game/lg_game.gd         LGGame: base class every game extends (the contract)
   game/lg_game_manifest.gd  LGGameManifest: catalog entry resource
   game/play_box.gd        PlayBox: the game's play volume ("simulation box")
   game/game_catalog.gd    registers manifests found in res://games/*/manifest.tres
   ar/ar_session.gd        AR mode, calibration, anchoring, lock / unlock
-  ar/calibration_flow.gd  pure state machine: scan -> place -> adjust -> lock
+  ar/calibration_flow.gd  pure state machine: scan -> place -> fit edges -> adjust -> lock
+  ar/edge_fitter.gd       Fit edges maths: simplified outline, corner / edge handles
+  ar/fit_handles.gd       Fit edges handle overlay (draw only)
+  ar/screen_ray.gd        exact screen -> world rays (inverse of the rendered projection)
   ar/calibration_hud.gd   calibration UI (big buttons, status, debug line)
   ar/arcore_bridge.gd     dynamic wrapper around the patched ARCore plugin
   ar/anchor_service.gd    the one world anchor (+ Cloud Anchor stub for multiplayer)
@@ -96,7 +100,20 @@ space** and reacts to lifecycle hooks and board-space taps.
    *Skip:* tap **Place here** (or the screen) to place on the reticle instead.
    The board is then fitted and kept inside the selected ARCore plane's
    boundary.
-3. **Adjust, then lock.** Drag to move, pinch to resize, twist to rotate. Drags
+3. **Fit the edges.** The play area (the traced outline, or the detected
+   surface) is shown with big round **corner handles** and bar-shaped **edge
+   handles**. Drag them onto the real table edges where the outline is off: a
+   corner moves one corner, an edge slides a whole side straight in or out.
+   Drags are relative (the handle moves with the finger's motion on the
+   surface), so the finger never has to cover the edge being lined up; the
+   white dot marks the exact point. Moves that would fold the outline inside
+   out or collapse it are refused. **Reset** starts over, **Done** (or Lock)
+   commits it. The fitted outline becomes the play area: it clamps the board
+   and box, the game's projector glow is clipped to it (nothing spills past
+   the real edge), plane refreshes no longer change it, it survives pause /
+   resume, and **Use traced area** reuses it. **Fit edges** in step 4 re-opens
+   the stage.
+4. **Adjust, then lock.** Drag to move, pinch to resize, twist to rotate. Drags
    project onto the selected surface's height only, and the footprint is
    clamped inside the traced area (or the plane): it stops at the edge instead
    of hanging off it. **Lock** starts the game. **Unlock** pauses it to adjust
@@ -119,9 +136,13 @@ comes back when tracking does.
 
 If ARCore is not tracking yet, *Place in front of me* holds the board in front
 of the camera (so it never slides away) and turns it into a world anchor
-after one second of continuous tracking. Tap the step panel **five times** to
-show the AR debug line (it also appears by itself after the scan timeout and
-in debuggable builds).
+after one second of continuous tracking. To show the AR debug line: tap the
+step panel **five times**, or, any time (also while playing), tap the small
+**dbg** button under "‹ Games" or **hold the status line** (top right, e.g.
+"X to play") for 1.5 s. It also appears by itself after the scan timeout and
+in debuggable builds. While it is shown, the **tap probe** is on: every tap
+draws a magenta dot where the finger touched and a cyan ring where the
+board hit projects back to the screen (they should coincide).
 The debug line also shows, once the board is placed:
 
 - `anc T plane`: anchor tracking (T tracking, P paused, S stopped) and how it
@@ -134,10 +155,21 @@ The debug line also shows, once the board is placed:
   (a few cm off means the board floats over / sinks into the real surface,
   which looks like drifting as you walk around); `lost N`: camera tracking
   losses;
-- `area traced 0.42m²` / `area plane ...`: the play area;
-- `taps N/M last x,z`: taps that hit the board / taps seen, last board-space
-  point. Every tap on the board shows a short white ring where it landed (on
-  the board's tap surface).
+- `area traced 0.42m²` / `area plane ...` / `area fitted ...`: the play area;
+- `taps N/M · tap px 812,433 vp 1560x720 win 2340x1080 cs 1.50 xr-ray hit
+  0.031,-0.046 err 0.2px cell 4`: taps that hit the board / taps seen, then
+  the last tap: touch position (viewport px), viewport and window size,
+  content scale, which ray maths was used, the board-space hit, how far the
+  hit projects back from the touch, and what the game says is there. Every
+  tap on the board also shows a short white ring where it landed.
+
+**Screen rays.** All screen -> world rays (taps, drags, tracing, handles)
+go through `ScreenRay`, which inverts the projection the frame is actually
+rendered with. Do not use `Camera3D.project_ray_normal()` on the AR camera:
+in Godot 4.4 `XRCamera3D` builds it from the XR projection's near-plane
+extents but the camera's own `near` (the ARCore plugin fixes near at 0.1 m),
+and assumes a symmetric frustum; with near 0.01 m that put rays ~50 degrees
+off at the screen edges.
 
 The game does not play while the board is being placed: `LGGame.is_playing()`
 is true only when the board is locked and the app is in the foreground.
@@ -207,6 +239,13 @@ inside the box); at a low phone angle, a 2.6 cm slab tapped on the table
 plane would be off by about a third of a tic-tac-toe cell.
 
 **Box outline while playing:** hidden by default; override
+**Debug naming:** `describe_point(point) -> String` names a board-space point
+for the debug line / tap probe (Tic-Tac-Toe returns "cell 4").
+
+**Glow clipping:** every `Holo.disc_material` (glow bases, ripples) is
+clipped by the platform to the play area's real outline (`Holo.set_clip`);
+games need do nothing.
+
 `box_outline_while_playing() -> float` (0 hidden .. 1 as bright as while
 adjusting) to keep it on dimly. Tic-Tac-Toe uses 0.35.
 
@@ -290,7 +329,11 @@ camera), `surface_tests` (play area: plane selection, tracing, clamping, a
 plywood-on-driveway scene model, screen-touch taps), `field_tests` (phone
 field-test regressions: Android touch sequences, trace robustness, world lock
 under camera motion / plane refinement / tracking loss, drift readout, the
-hologram board), `box_tests` (the play box: maths and caps, manifest limits,
+hologram board), `touch_tests` (the phone touch path: an ARCore-style XR
+projection, a 2340x1080 window with content scale, touches as window pixels,
+every cell from several poses; tap slop, tap probe, in-game debug access),
+`fit_tests` (Fit edges: handle maths, the stage, touch drags onto the real
+edge, Reset / Done, board clamping, glow clipping, persistence), `box_tests` (the play box: maths and caps, manifest limits,
 the game API and hooks, the Airspace slider, persistence across pause /
 resume / re-place / sessions, outline levels, tap rays, the games' boxes).
 Leaked-RID messages at exit are harmless.

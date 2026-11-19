@@ -100,8 +100,10 @@ func _model_hit(normalized: Vector2) -> Dictionary:
 	if _session == null or _session.xr_camera == null:
 		return {"hit": false}
 	var screen: Vector2 = normalized * get_viewport().get_visible_rect().size
-	var origin: Vector3 = _session.xr_camera.project_ray_origin(screen)
-	var direction: Vector3 = _session.xr_camera.project_ray_normal(screen)
+	# ARCore's own hit test is exact (inverse of its projection).
+	var ray: Array[Vector3] = ScreenRay.ray(_session.xr_camera, screen)
+	var origin: Vector3 = ray[0]
+	var direction: Vector3 = ray[1]
 	var layers: Array = []
 	if box_on:
 		layers.append([BOX_HEIGHT, box_rect])
@@ -253,6 +255,7 @@ func _test_tracing() -> void:
 		ar.region != null and ar.region.source == SurfaceRegion.Source.TRACED
 		and absf(ar.region.area() - traced.get_area()) < 0.03
 	))
+	check("trace: placing on the outline opens the Fit edges stage", ar.flow.step == CalibrationFlow.Step.FITTING and ar.hud.fit_done_button.visible)
 	check("trace: the anchor sits at the traced surface's height", absf(host.world_anchor.global_position.y - PLY_HEIGHT) < 0.002)
 	await frames(1)
 	check("trace: the board is auto-fitted inside the real plywood (not the over-extended plane)", (
@@ -272,7 +275,7 @@ func _test_tracing() -> void:
 	await frames(3)
 	check("trace: once locked the board ignores camera movement", xform_near(host.game.global_transform, locked, 0.0001))
 	check("trace: the outline hides while playing", not ar._region_node.visible)
-	check("trace: the debug line reports the traced area", ar.debug_suffix().contains("area traced"))
+	check("trace: locking straight from Fit edges confirms the outline (debug: fitted area)", ar.debug_suffix().contains("area fitted"))
 	ar.begin_replace()
 	check("trace: re-place clears the area but offers the traced one again", (
 		ar.region == null and ar.flow.has_saved_area and bool(ar.flow.controls()["use_area"])

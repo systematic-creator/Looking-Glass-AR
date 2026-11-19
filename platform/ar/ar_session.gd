@@ -124,6 +124,16 @@ var tracking_info: Dictionary = {}
 var front_follow: bool = false
 
 var _adjusting: bool = false
+## "Fit edges" stage: the editable outline, the grabbed handle and the last
+## finger point on the surface (anchor space).
+var fitter: EdgeFitter = EdgeFitter.new()
+var _fit_handle: Dictionary = {}
+var _fit_last: Variant = null
+var _fit_source: SurfaceRegion.Source = SurfaceRegion.Source.PLANE
+## Bumped whenever the play area changes (the host re-clips the glow).
+var region_version: int = 0
+## How close (viewport px, ~1.3 cm on a phone) a touch must be to grab a handle.
+const FIT_GRAB_PX: float = 64.0
 var _start_elapsed: float = 0.0
 var _saved_background: int = Environment.BG_COLOR
 var _awaiting_camera: bool = false
@@ -305,7 +315,9 @@ func _enter_ar() -> void:
 	add_child(xr_origin)
 	xr_camera = XRCamera3D.new()
 	xr_camera.name = "XRCamera3D"
-	xr_camera.near = 0.01
+	# The ARCore plugin's projection always uses near = 0.1 m; match it so
+	# nothing that reads camera.near disagrees with the rendered frame.
+	xr_camera.near = 0.1
 	xr_camera.far = 50.0
 	xr_origin.add_child(xr_camera)
 	xr_camera.current = true
@@ -337,6 +349,9 @@ func _enter_ar() -> void:
 	hud.trace_clear_pressed.connect(clear_trace)
 	hud.trace_cancel_pressed.connect(cancel_trace)
 	hud.airspace_changed.connect(set_box_height)
+	hud.fit_done_pressed.connect(func() -> void: finish_fit())
+	hud.fit_reset_pressed.connect(reset_fit)
+	hud.fit_edges_pressed.connect(func() -> void: begin_fit())
 	hud.apply_flow(flow)
 	_sync_play()
 
@@ -469,7 +484,10 @@ static func front_pose(camera: Transform3D) -> Transform3D:
 
 func _after_placed() -> void:
 	phase = Phase.PLACED
-	flow.placed()
+	var fit: bool = region != null and region.is_valid()
+	flow.placed(fit)
+	if fit:
+		_start_fit()
 	_reset_drift()
 	_has_lock_origin = false
 	board_hidden_by_loss = false
@@ -497,6 +515,8 @@ func begin_replace() -> void:
 	phase = Phase.SEARCHING
 	placement.locked = false
 	flow.restart()
+	fitter = EdgeFitter.new()
+	_fit_handle = {}
 	_reset_drift()
 	_has_lock_origin = false
 	board_hidden_by_loss = false
@@ -518,6 +538,8 @@ func recenter() -> void:
 func set_locked(locked: bool) -> void:
 	if not is_ar() or phase != Phase.PLACED:
 		return
+	if locked and flow.step == CalibrationFlow.Step.FITTING:
+		_commit_fit()
 	if locked and not placement.locked:
 		rebase_anchor()
 		_lock_origin = anchors.pose.origin
@@ -672,7 +694,9 @@ func _process(delta: float) -> void:
 	_update_tracking_loss(delta)
 	if refresh:
 		surface_gap = measure_surface_gap()
-	if region != null and region.source == SurfaceRegion.Source.PLANE and not placement.locked:
+	if flow.step == CalibrationFlow.Step.FITTING and hud != null:
+		hud.fit_handles.set_handles(fit_handle_screens(), _active_handle_slot())
+	if region != null and region.source == SurfaceRegion.Source.PLANE and not placement.locked and flow.step != CalibrationFlow.Step.FITTING:
 		_region_refresh += delta
 		if _region_refresh >= 1.0:
 			_region_refresh = 0.0
@@ -830,6 +854,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if magnify_enabled and gesture.get("kind", &"") == &"pinch":
 			placement.magnify_by(float(gesture["scale"]))
 		return
+	if flow.step == CalibrationFlow.Step.FITTING:
+		_fit_input(event, gesture)
+		return
 	match gesture.get("kind", &"") as StringName:
 		&"drag":
 			_adjusting = drag_board(gesture["from"] as Vector2, gesture["to"] as Vector2)
@@ -850,8 +877,9 @@ func _anchor_point(screen: Vector2) -> Variant:
 	if camera == null or world_anchor == null:
 		return null
 	var up: Vector3 = world_anchor.global_transform.basis.y.normalized()
-	var origin: Vector3 = camera.project_ray_origin(screen)
-	var direction: Vector3 = camera.project_ray_normal(screen)
+	var ray: Array[Vector3] = ScreenRay.ray(camera, screen)
+	var origin: Vector3 = ray[0]
+	var direction: Vector3 = ray[1]
 	if absf(direction.dot(up)) < MIN_RAY_ELEVATION:
 		return null
 	var ground := Plane(up, world_anchor.global_position)
@@ -917,6 +945,168 @@ func constrain_offset(proposed: Vector3) -> Vector3:
 	return Vector3((center as Vector2).x, 0.0, (center as Vector2).y)
 
 
+# --- Fit edges -------------------------------------------------------------------
+
+## "Fit edges" again from Adjust. False if there is no play area.
+func begin_fit() -> bool:
+	if not is_ar() or phase != Phase.PLACED or placement.locked or region == null or not region.is_valid():
+		return false
+	if not flow.begin_fit():
+		return false
+	_start_fit()
+	if hud != null:
+		hud.apply_flow(flow)
+	return true
+
+
+func _start_fit() -> void:
+	_fit_source = region.source
+	fitter.begin(region.polygon)
+	_fit_handle = {}
+	_set_region(SurfaceRegion.make(fitter.polygon, _fit_source))
+
+
+## Commit the fitted outline and go on to Adjust.
+func finish_fit() -> bool:
+	if flow.step != CalibrationFlow.Step.FITTING:
+		return false
+	_commit_fit()
+	flow.finish_fit()
+	if hud != null:
+		hud.apply_flow(flow)
+	_sync_play()
+	return true
+
+
+## Back to the outline the stage started with.
+func reset_fit() -> void:
+	if flow.step != CalibrationFlow.Step.FITTING:
+		return
+	fitter.reset()
+	_set_region(SurfaceRegion.make(fitter.polygon, _fit_source))
+	_constrain_board()
+
+
+## The fitted outline becomes the play area (it clamps the board and clips
+## the glow), and the session's reusable area.
+func _commit_fit() -> void:
+	if not fitter.is_active():
+		return
+	_set_region(SurfaceRegion.make(fitter.polygon, SurfaceRegion.Source.FITTED))
+	var world := PackedVector3Array()
+	for p: Vector2 in fitter.polygon:
+		world.append(AnchorService.upright(anchors.pose) * Vector3(p.x, 0.0, p.y))
+	saved_area_world = world
+	flow.has_saved_area = true
+	_fit_handle = {}
+	_constrain_board()
+
+
+## Keep the board inside the (new) play area: slide it in, or fit a smaller
+## board if it no longer fits.
+func _constrain_board() -> void:
+	if region == null or not region.is_valid():
+		return
+	var half: Vector2 = board_size * 0.5 * placement.scale
+	var center: Variant = region.clamp_center(Vector2(placement.offset.x, placement.offset.z), half, placement.yaw)
+	if center == null:
+		var fit: Dictionary = region.fit_board(board_size, BoardPlacement.MIN_SCALE, placement.scale)
+		if fit.is_empty():
+			return
+		center = fit["center"]
+		placement.yaw = float(fit["yaw"])
+		placement.scale = float(fit["scale"])
+	placement.offset = Vector3((center as Vector2).x, 0.0, (center as Vector2).y)
+	_apply_transforms()
+	placement.save(placement_path)
+
+
+## Screen positions of every handle (skips ones behind the camera):
+## [{"kind", "index", "screen", "along"}].
+func fit_handle_screens() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	if xr_camera == null or world_anchor == null or not fitter.is_active():
+		return out
+	for h: Dictionary in fitter.handles():
+		var p: Vector2 = h["point"] as Vector2
+		var world: Vector3 = world_anchor.to_global(Vector3(p.x, 0.0, p.y))
+		if xr_camera.is_position_behind(world):
+			continue
+		var along := Vector2.RIGHT
+		if int(h["kind"]) == EdgeFitter.Handle.EDGE:
+			var i: int = int(h["index"])
+			var a: Vector2 = fitter.polygon[i]
+			var b: Vector2 = fitter.polygon[(i + 1) % fitter.polygon.size()]
+			var wa: Vector3 = world_anchor.to_global(Vector3(a.x, 0.0, a.y))
+			var wb: Vector3 = world_anchor.to_global(Vector3(b.x, 0.0, b.y))
+			if not xr_camera.is_position_behind(wa) and not xr_camera.is_position_behind(wb):
+				along = xr_camera.unproject_position(wb) - xr_camera.unproject_position(wa)
+		out.append({"kind": h["kind"], "index": h["index"], "screen": xr_camera.unproject_position(world), "along": along})
+	return out
+
+
+## The handle a touch at `screen` grabs (corners win ties), or {}.
+func pick_fit_handle(screen: Vector2) -> Dictionary:
+	var best: Dictionary = {}
+	var best_d: float = FIT_GRAB_PX
+	for h: Dictionary in fit_handle_screens():
+		var d: float = (h["screen"] as Vector2).distance_to(screen)
+		if int(h["kind"]) == EdgeFitter.Handle.EDGE:
+			d += 12.0
+		if d <= best_d:
+			best_d = d
+			best = h
+	return best
+
+
+func _active_handle_slot() -> int:
+	if _fit_handle.is_empty():
+		return -1
+	var list: Array[Dictionary] = fit_handle_screens()
+	for i: int in list.size():
+		if int(list[i]["kind"]) == int(_fit_handle["kind"]) and int(list[i]["index"]) == int(_fit_handle["index"]):
+			return i
+	return -1
+
+
+## Fit-edges touches: press on a handle grabs it, one-finger drags move it
+## by the finger's motion on the surface (relative, so the finger never has
+## to cover the edge it is lining up), release lets go.
+func _fit_input(event: InputEvent, gesture: Dictionary) -> void:
+	if event is InputEventScreenTouch:
+		var touch: InputEventScreenTouch = event
+		if touch.pressed and gestures.touch_count() == 1:
+			_fit_handle = pick_fit_handle(touch.position)
+			_fit_last = _anchor_point(touch.position) if not _fit_handle.is_empty() else null
+		elif not touch.pressed and gestures.touch_count() == 0:
+			if not _fit_handle.is_empty():
+				_constrain_board()
+			_fit_handle = {}
+			_fit_last = null
+		return
+	if gesture.get("kind", &"") != &"drag" or _fit_handle.is_empty():
+		return
+	var at: Variant = _anchor_point(gesture["to"] as Vector2)
+	if at == null:
+		return
+	if _fit_last != null:
+		var d: Vector3 = (at as Vector3) - (_fit_last as Vector3)
+		if fitter.move_handle(int(_fit_handle["kind"]) as EdgeFitter.Handle, int(_fit_handle["index"]), Vector2(d.x, d.z)):
+			_set_region(SurfaceRegion.make(fitter.polygon, _fit_source))
+	_fit_last = at
+
+
+## The play area's outline in world x/z (empty if none), for glow clipping.
+func play_area_world() -> PackedVector2Array:
+	var out := PackedVector2Array()
+	if region == null or not region.is_valid() or world_anchor == null or not is_ar():
+		return out
+	for p: Vector2 in region.polygon:
+		var w: Vector3 = world_anchor.to_global(Vector3(p.x, 0.0, p.y))
+		out.append(Vector2(w.x, w.z))
+	return out
+
+
 # --- Play area: selected plane / traced outline ------------------------------------
 
 ## Normalized-screen hit test for a screen position (viewport coordinates).
@@ -976,6 +1166,7 @@ func _fit_into_region() -> void:
 
 func _set_region(p_region: SurfaceRegion) -> void:
 	region = p_region
+	region_version += 1
 	if _region_node != null:
 		_region_node.queue_free()
 		_region_node = null
@@ -988,7 +1179,9 @@ func _set_region(p_region: SurfaceRegion) -> void:
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	material.albedo_color = Color(1.0, 0.85, 0.3, 0.95) if region.source == SurfaceRegion.Source.TRACED else Color(0.35, 0.95, 1.0, 0.6)
+	material.albedo_color = Color(0.35, 0.95, 1.0, 0.6)
+	if region.source == SurfaceRegion.Source.TRACED or region.source == SurfaceRegion.Source.FITTED:
+		material.albedo_color = Color(1.0, 0.85, 0.3, 0.95)
 	_region_node.material_override = material
 	world_anchor.add_child(_region_node)
 	_region_node.visible = is_ar() and phase == Phase.PLACED and not placement.locked
@@ -1295,8 +1488,9 @@ func _origin_ray(screen: Vector2) -> Variant:
 	if camera == null:
 		return null
 	var to_origin: Transform3D = (xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY).affine_inverse()
-	var origin: Vector3 = camera.project_ray_origin(screen)
-	var direction: Vector3 = camera.project_ray_normal(screen)
+	var ray: Array[Vector3] = ScreenRay.ray(camera, screen)
+	var origin: Vector3 = ray[0]
+	var direction: Vector3 = ray[1]
 	return [to_origin * origin, (to_origin.basis * direction).normalized()]
 
 
@@ -1308,8 +1502,9 @@ func _project_to_height(screen: Vector2, height: float, max_distance: float = MA
 		return null
 	var origin_xform: Transform3D = xr_origin.global_transform if xr_origin != null else Transform3D.IDENTITY
 	var up: Vector3 = origin_xform.basis.y.normalized()
-	var origin: Vector3 = camera.project_ray_origin(screen)
-	var direction: Vector3 = camera.project_ray_normal(screen)
+	var ray: Array[Vector3] = ScreenRay.ray(camera, screen)
+	var origin: Vector3 = ray[0]
+	var direction: Vector3 = ray[1]
 	if absf(direction.dot(up)) < MIN_RAY_ELEVATION:
 		return null
 	var plane := Plane(up, origin_xform * Vector3(0.0, height, 0.0))
@@ -1358,13 +1553,19 @@ func _update_trace_preview() -> void:
 	_trace_node.mesh = SurfaceRegion.outline_mesh(flat, false, 0.012, _trace_height + 0.003)
 
 
+## Update the debug line on the next frame (e.g. right after it is shown).
+func refresh_debug() -> void:
+	_diag_elapsed = DIAG_INTERVAL
+
+
 func debug_suffix() -> String:
 	var parts: PackedStringArray = []
 	var drift: String = drift_debug()
 	if not drift.is_empty():
 		parts.append(drift)
 	if region != null:
-		parts.append("area %s %.2fm²" % ["traced" if region.source == SurfaceRegion.Source.TRACED else "plane", region.area()])
+		var names: Dictionary = {SurfaceRegion.Source.TRACED: "traced", SurfaceRegion.Source.FITTED: "fitted"}
+		parts.append("area %s %.2fm²" % [names.get(region.source, "plane"), region.area()])
 	if not extra_debug.is_empty():
 		parts.append(extra_debug)
 	return "" if parts.is_empty() else " · " + " · ".join(parts)

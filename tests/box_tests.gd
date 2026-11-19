@@ -70,6 +70,7 @@ func _placed(host: GameHost) -> ARSession:
 	_look(Vector3(0.0, 0.6, 0.35), Vector3(0.0, PLY_HEIGHT, -0.6))
 	await frames(3)
 	host.session.place_at_reticle()
+	host.session.finish_fit()
 	await frames(1)
 	return host.session
 

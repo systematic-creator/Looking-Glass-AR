@@ -9,13 +9,17 @@ extends RefCounted
 ##                  (encouraged) or "Place here" (or tap) to skip tracing.
 ##   TRACING        the player draws around the play area with one finger;
 ##                  the board is auto-fitted inside the outline.
+##   FITTING        "Fit edges": the play-area outline (traced or the
+##                  detected surface) gets corner and edge handles; the
+##                  player drags them onto the real table edges. Done (or
+##                  Lock) commits it; it clamps the board and clips the glow.
 ##   ADJUSTING      drag / pinch / twist the board (kept inside the traced
 ##                  area or the surface's edge), then Lock or Re-place.
 ##   LOCKED         the game runs. Unlock returns to ADJUSTING.
 ##
 ## The game only plays (LGGame.is_playing()) while LOCKED.
 
-enum Step { SCANNING, SURFACE_FOUND, TRACING, ADJUSTING, LOCKED }
+enum Step { SCANNING, SURFACE_FOUND, TRACING, FITTING, ADJUSTING, LOCKED }
 
 ## Seconds of scanning without a surface before the fallbacks are offered.
 const FALLBACK_OFFER_SECONDS: float = 12.0
@@ -44,6 +48,8 @@ var tracking_seconds: float = 0.0
 var anchor_pending: bool = false
 ## An outline traced earlier this session can be reused (switching games).
 var has_saved_area: bool = false
+## The board has a play area (traced / surface / fitted) whose edges can be fitted.
+var has_region: bool = false
 ## Points in the current tracing stroke (for the HUD hint).
 var trace_points: int = 0
 ## Why the last trace was rejected ("" = none).
@@ -102,12 +108,29 @@ func update(delta: float, info: Dictionary, surface_found: bool) -> void:
 		scan_seconds += maxf(0.0, delta)
 
 
-func placed() -> void:
-	step = Step.ADJUSTING
+## The board was placed; `fit` = there is a play area to fit first.
+func placed(fit: bool = false) -> void:
+	has_region = fit
+	step = Step.FITTING if fit else Step.ADJUSTING
+
+
+## "Fit edges" from ADJUSTING. Returns true if started.
+func begin_fit() -> bool:
+	if step != Step.ADJUSTING or not has_region:
+		return false
+	step = Step.FITTING
+	return true
+
+
+func finish_fit() -> void:
+	if step == Step.FITTING:
+		step = Step.ADJUSTING
 
 
 func set_locked(locked: bool) -> void:
-	if step == Step.ADJUSTING or step == Step.LOCKED:
+	if step == Step.FITTING and locked:
+		step = Step.LOCKED
+	elif step == Step.ADJUSTING or step == Step.LOCKED:
 		step = Step.LOCKED if locked else Step.ADJUSTING
 
 
@@ -140,7 +163,11 @@ func controls() -> Dictionary:
 		"play_without_ar": offers_fallback(),
 		"lock": step == Step.ADJUSTING,
 		"airspace": step == Step.ADJUSTING,
-		"replace": step == Step.ADJUSTING or step == Step.LOCKED,
+		"fit_done": step == Step.FITTING,
+		"fit_reset": step == Step.FITTING,
+		"fit_edges": step == Step.ADJUSTING and has_region,
+		"fit_handles": step == Step.FITTING,
+		"replace": step == Step.ADJUSTING or step == Step.LOCKED or step == Step.FITTING,
 		"unlock": step == Step.LOCKED,
 		"magnify": step == Step.LOCKED,
 		"recenter": step == Step.ADJUSTING or step == Step.LOCKED,
@@ -152,13 +179,15 @@ func controls() -> Dictionary:
 func title() -> String:
 	match step:
 		Step.SCANNING:
-			return "Step 1 of 3 · Find a surface"
+			return "Step 1 of 4 · Find a surface"
 		Step.SURFACE_FOUND:
-			return "Step 2 of 3 · Place the board"
+			return "Step 2 of 4 · Place the board"
 		Step.TRACING:
-			return "Step 2 of 3 · Trace the play area"
+			return "Step 2 of 4 · Trace the play area"
+		Step.FITTING:
+			return "Step 3 of 4 · Fit the edges"
 		Step.ADJUSTING:
-			return "Step 3 of 3 · Adjust, then lock"
+			return "Step 4 of 4 · Adjust, then lock"
 		_:
 			return ""
 
@@ -180,6 +209,8 @@ func message() -> String:
 			if trace_points == 0:
 				return "Start on the surface and draw all the way around the area you want to play on."
 			return "Keep going around the edge, then lift your finger."
+		Step.FITTING:
+			return "Drag the round corners (or the bars on the sides) onto the real edges of your table. Done when the outline matches; Reset starts over."
 		Step.ADJUSTING:
 			if anchor_pending:
 				return "Holding the board in front of you until AR tracking starts. Move the phone slowly; you can Lock and play now."

@@ -16,6 +16,9 @@ signal use_area_pressed()
 signal trace_done_pressed()
 signal trace_clear_pressed()
 signal trace_cancel_pressed()
+signal fit_done_pressed()
+signal fit_reset_pressed()
+signal fit_edges_pressed()
 ## The player moved the airspace (play-box height) slider; board units.
 signal airspace_changed(height: float)
 ## Five quick taps on the step panel toggle the AR debug line.
@@ -44,6 +47,11 @@ var magnify_button: Button
 var recenter_button: Button
 var replace_button: Button
 var debug_label: Label
+var fit_done_button: Button
+var fit_reset_button: Button
+var fit_edges_button: Button
+## Corner / edge handles of the "Fit edges" stage (screen overlay).
+var fit_handles: FitHandles
 ## Right-edge "Airspace" panel: a vertical slider for the play-box height,
 ## shown while adjusting when the game allows a range.
 var airspace_panel: PanelContainer
@@ -148,6 +156,12 @@ func _ready() -> void:
 	place_in_front_button.pressed.connect(func() -> void: place_in_front_pressed.emit())
 	play_without_ar_button = _button(row, "Play without AR", SECONDARY_SIZE, false)
 	play_without_ar_button.pressed.connect(func() -> void: play_without_ar_pressed.emit())
+	fit_done_button = _button(row, "Done", PRIMARY_SIZE, true)
+	fit_done_button.pressed.connect(func() -> void: fit_done_pressed.emit())
+	fit_reset_button = _button(row, "Reset", SECONDARY_SIZE, false)
+	fit_reset_button.pressed.connect(func() -> void: fit_reset_pressed.emit())
+	fit_edges_button = _button(row, "Fit edges", SECONDARY_SIZE, false)
+	fit_edges_button.pressed.connect(func() -> void: fit_edges_pressed.emit())
 	lock_button = _button(row, "Lock", PRIMARY_SIZE, true)
 	lock_button.pressed.connect(func() -> void: lock_toggled.emit(true))
 	unlock_button = _button(row, "Unlock", SECONDARY_SIZE, false)
@@ -160,16 +174,17 @@ func _ready() -> void:
 	magnify_button.toggle_mode = true
 	magnify_button.toggled.connect(func(on: bool) -> void: magnify_toggled.emit(on))
 
-	# Small AR diagnostics line, bottom-left, above everything else.
+	# Small AR diagnostics block under the step panel / top-left buttons, so
+	# it never covers the bottom buttons; it never takes touches.
 	debug_label = Label.new()
 	debug_label.name = "ARDebug"
 	debug_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	debug_label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	debug_label.offset_top = -118.0
-	debug_label.offset_bottom = -4.0
-	debug_label.offset_left = 8.0
-	debug_label.offset_right = -8.0
-	debug_label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	debug_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	debug_label.offset_top = 172.0
+	debug_label.offset_bottom = 300.0
+	debug_label.offset_left = 100.0
+	debug_label.offset_right = -150.0
+	debug_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	debug_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	debug_label.add_theme_font_size_override("font_size", 15)
 	debug_label.add_theme_color_override("font_color", Color(1.0, 1.0, 0.6))
@@ -178,6 +193,9 @@ func _ready() -> void:
 	debug_label.visible = false
 	add_child(debug_label)
 	_build_airspace_panel()
+	fit_handles = FitHandles.new()
+	add_child(fit_handles)
+	move_child(fit_handles, 0)
 	apply_flow(CalibrationFlow.new())
 
 
@@ -255,6 +273,11 @@ func _show_airspace_value(value: float) -> void:
 
 func _process(delta: float) -> void:
 	_clock += delta
+	if debug_label.visible:
+		# Just under the step panel when it is shown, else under "‹ Games".
+		var top: float = _banner.get_global_rect().end.y + 10.0 if _banner.visible else 160.0
+		debug_label.offset_top = maxf(top, 160.0)
+		debug_label.offset_bottom = debug_label.offset_top + 130.0
 	if sweep_hint == null or not sweep_hint.visible:
 		return
 	_sweep_time += delta
@@ -313,6 +336,10 @@ func apply_flow(flow: CalibrationFlow) -> void:
 	recenter_button.visible = bool(shown["recenter"])
 	magnify_button.visible = bool(shown["magnify"])
 	airspace_panel.visible = bool(shown["airspace"]) and airspace_adjustable
+	fit_done_button.visible = bool(shown["fit_done"])
+	fit_reset_button.visible = bool(shown["fit_reset"])
+	fit_edges_button.visible = bool(shown["fit_edges"])
+	fit_handles.visible = bool(shown["fit_handles"])
 	sweep_hint.visible = bool(shown["sweep_hint"])
 	stats_label.visible = bool(shown["stats"])
 	title_label.text = flow.title()
@@ -341,7 +368,8 @@ func is_over_ui(screen_position: Vector2) -> bool:
 
 func all_buttons() -> Array[Button]:
 	return [place_button, trace_button, use_area_button, trace_done_button, trace_clear_button, trace_cancel_button,
-		place_in_front_button, play_without_ar_button, lock_button, unlock_button, magnify_button, recenter_button, replace_button]
+		place_in_front_button, play_without_ar_button, lock_button, unlock_button, magnify_button, recenter_button, replace_button,
+		fit_done_button, fit_reset_button, fit_edges_button]
 
 
 ## Set the debug text; `forced` shows it even if the player has not toggled it
@@ -358,11 +386,17 @@ func register_panel_tap(now: float) -> bool:
 		_tap_times.pop_front()
 	if _tap_times.size() >= DEBUG_TAPS:
 		_tap_times.clear()
-		debug_requested = not debug_requested
-		debug_label.visible = debug_requested and not debug_label.text.is_empty()
-		debug_toggled.emit(debug_requested)
+		toggle_debug()
 		return true
 	return false
+
+
+## Show / hide the debug line (the 5-tap panel gesture, the in-game "dbg"
+## button and the status-line long-press all land here).
+func toggle_debug() -> void:
+	debug_requested = not debug_requested
+	debug_label.visible = debug_requested and not debug_label.text.is_empty()
+	debug_toggled.emit(debug_requested)
 
 
 func _on_banner_input(event: InputEvent) -> void:
