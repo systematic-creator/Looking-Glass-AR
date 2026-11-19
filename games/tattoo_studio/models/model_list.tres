@@ -1,0 +1,50 @@
+[gd_resource type="Resource" script_class="TattooModelList" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://games/tattoo_studio/scripts/model_list.gd" id="1_list"]
+[ext_resource type="Script" path="res://games/tattoo_studio/scripts/model_entry.gd" id="2_entry"]
+
+[sub_resource type="Resource" id="Resource_male"]
+script = ExtResource("2_entry")
+id = &"male"
+display_name = "Male"
+source = "procedural:male"
+height_m = 1.75
+default_scale = 1.0
+min_scale = 0.1
+max_scale = 1.0
+skin_color = Color(0.82, 0.64, 0.52, 1)
+scale_pattern = 0.0
+ink_resolution = 1024
+credits = "Procedural (Looking Glass, own work)"
+
+[sub_resource type="Resource" id="Resource_female"]
+script = ExtResource("2_entry")
+id = &"female"
+display_name = "Female"
+source = "procedural:female"
+height_m = 1.66
+default_scale = 1.0
+min_scale = 0.1
+max_scale = 1.0
+skin_color = Color(0.86, 0.69, 0.58, 1)
+scale_pattern = 0.0
+ink_resolution = 1024
+credits = "Procedural (Looking Glass, own work)"
+
+[sub_resource type="Resource" id="Resource_lizard"]
+script = ExtResource("2_entry")
+id = &"lizard"
+display_name = "Lizard man"
+source = "procedural:lizard"
+height_m = 1.86
+default_scale = 1.0
+min_scale = 0.1
+max_scale = 1.0
+skin_color = Color(0.45, 0.62, 0.36, 1)
+scale_pattern = 1.0
+ink_resolution = 1024
+credits = "Procedural (Looking Glass, own work)"
+
+[resource]
+script = ExtResource("1_list")
+models = Array[ExtResource("2_entry")]([SubResource("Resource_male"), SubResource("Resource_female"), SubResource("Resource_lizard")])

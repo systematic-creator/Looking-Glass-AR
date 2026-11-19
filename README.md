@@ -11,8 +11,10 @@ goal: players in the same room share one anchored board, and each sees it
 from their own phone's position.
 
 **Status:** early. The platform layer (ARCore, calibration, anchoring), the
-game contract, the launcher, and two games are in place. *Tic-Tac-Toe* is a
-sample that proves the contract. *Competitive Evolution* is a placeholder
+game contract, the launcher, and three games are in place. *Tic-Tac-Toe* is a
+sample that proves the contract. *Tattoo Studio* tattoos a life-size or
+miniature 3D model and is the test bed for 3D models
+([games/tattoo_studio](games/tattoo_studio/README.md)). *Competitive Evolution* is a placeholder
 board; the full game lives in
 [Competitive-evolution-AGR](https://github.com/Systematic-creator/Competitive-evolution-AGR)
 and is on hiatus until it gets imported here.
@@ -280,7 +282,8 @@ A game is a folder under `res://games/<id>/` with a `manifest.tres`
 scale 1, x by z), `board_height` (tallest point, for camera framing), `entry`
 (.tscn or .gd), `version`, `author`, `tags`, and the play box height:
 `box_height` (preferred; 0 = `board_height`), `box_min_height` /
-`box_max_height` (the range the player may pick; 0 = 2 cm / the platform cap).
+`box_max_height` (the range the player may pick; 0 = 2 cm / the platform cap),
+`tall_box` (the floor exception below).
 
 **Board space** is the `LGGame` node's local space: the origin is the centre of
 the board resting on the surface, +Y is up, 1 unit = 1 metre at placement
@@ -308,7 +311,13 @@ Shortcuts on `LGGame`: `box_contains(point)`, `clamp_to_box(point)`.
 side)` (board units, so it scales with the board) and is at least 2 cm. The
 player's choice (the Airspace slider, shown only if min < max) stays within
 the game's range; it is saved with the placement (`box_height`, -1 = the
-game's preferred height).
+game's preferred height). **Tall-box exception:** a manifest with
+`tall_box = true` (games that stand life-size things on the floor) is capped
+at `min(2.0 m, 2.5 x the long side)` instead (`PlayBox.TALL_MAX_HEIGHT`,
+`TALL_HEIGHT_RATIO`); on a table the placement scale shrinks the whole box
+as usual. `validate()` rejects tall-box heights over 2.0 m. A game can ask
+for another height with `request_box_height(h)` (clamped and saved like the
+player's choice).
 
 **Hooks** (all optional):
 
@@ -320,13 +329,17 @@ game's preferred height).
 | `_on_board_tap(point: Vector3)` | A tap hit the board's tap surface (board space; returned with y = 0). Only while playing. |
 | `_on_board_drag(from, to)` | One-finger drag in board space, if `captures_drag()` returns true. |
 | `_on_box_ray(origin, direction)` | Every tap while playing, as a board-space ray, just before `_on_board_tap`: pick things in the airspace (`get_box().intersect_ray()`, `ray_at_height()`, your own geometry). |
+| `_on_ray_stroke(phase, origin, direction)` | If `captures_ray_strokes()`: one finger's board-space ray on press (`StrokePhase.BEGIN`), every move (`MOVE`) and release (`END`); a second finger ends it with `CANCEL`. For painting / sculpting on 3D things; the touch camera does not orbit meanwhile. |
+| `_on_board_pinch(scale, twist)` | If `captures_pinch()`: two-finger scale factor and twist (radians, + = clockwise on screen) while playing; outside AR the camera then no longer zooms on pinch. |
 | `_on_box_changed(box: PlayBox)` | The player changed the airspace height (after `_on_board_ready`; also the `box_changed` signal). Re-fit anything tied to the top. |
 | `_on_exit()` | Player is leaving the game. Save here. |
 
 **Helpers:** `is_playing()`, `is_board_locked()`, `get_board_size()`,
 `is_on_board(point)`, `set_status(text)` (shown by the platform while
 playing; hidden during AR calibration, prefixed "Paused" otherwise),
-`request_exit()` (back to the catalog).
+`request_exit()` (back to the catalog), `request_box_height(h)`. A game may
+add its own `CanvasLayer` controls; return true from
+`is_over_game_ui(screen)` for points on them so they are not board touches.
 
 **Raised boards:** override `board_surface_height() -> float` (board space,
 metres at scale 1) when the surface players tap is above the table, e.g. a
@@ -454,7 +467,13 @@ the unlocked height guard, the deadband, the covered-camera recovery on a
 matching plane, Re-place on table with the kept outline, loss and low-light
 messages, the debug overlay), `box_tests` (the play box: maths and caps, manifest limits,
 the game API and hooks, the Airspace slider, persistence across pause /
-resume / re-place / sessions, outline levels, tap rays, the games' boxes).
+resume / re-place / sessions, outline levels, tap rays, the games' boxes),
+`tattoo_tests` (Tattoo Studio: ink accumulation, once-per-stroke, eraser,
+colour mixing, UV seams, curvature, facing, the model contract and glTF
+drop-in, the tall box, ray-stroke / pinch hooks, touch strokes, rotate,
+scale and the box following, Focus, ink permanence across viewpoints, zoom,
+scale, model switches, pause / resume and relaunch, Clear all, AR strokes on
+a table miniature).
 Leaked-RID messages at exit are harmless.
 
 ## Android build

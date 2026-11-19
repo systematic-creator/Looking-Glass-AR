@@ -33,6 +33,18 @@ extends Node3D
 ## casting the finger's ray onto the plane y = board_surface_height(), so a
 ## raised board (a slab, a table top) takes taps where the player sees its top.
 ##
+## Ray strokes (painting / sculpting on 3D things), if captures_ray_strokes():
+##   _on_ray_stroke(phase, origin, direction)  one finger's ray in board space
+##       (unit direction) on press (BEGIN), every move (MOVE) and release
+##       (END). A second finger landing ends the stroke with CANCEL (the
+##       player is pinching). Taps still arrive as well (BEGIN+END first).
+## Pinch / twist, if captures_pinch():
+##   _on_board_pinch(scale, twist)  two-finger scale factor since the last
+##       event and twist in radians (positive = clockwise on screen). Outside
+##       AR the touch camera no longer zooms on pinch for such games.
+## Game UI: a game may add its own CanvasLayer controls; return true from
+## is_over_game_ui(screen) for points on them so they are not board touches.
+##
 ## Play volume ("simulation box"): get_box() is a PlayBox in board space:
 ## floor y = 0 on the chosen surface, footprint = manifest.board_size, height
 ## = the airspace (game-declared in the manifest, adjustable by the player
@@ -52,6 +64,11 @@ signal status_changed(text: String)
 signal playing_changed(playing: bool)
 ## The play box changed (after _on_board_ready).
 signal box_changed(box: PlayBox)
+## The game asks for another airspace height (request_box_height()).
+signal box_height_requested(height: float)
+
+## Phases of a ray stroke (_on_ray_stroke).
+enum StrokePhase { BEGIN, MOVE, END, CANCEL }
 
 ## Set by the platform before the game enters the tree.
 var manifest: LGGameManifest
@@ -134,6 +151,31 @@ func captures_drag() -> bool:
 	return false
 
 
+## Return true to receive one-finger ray strokes (_on_ray_stroke) while
+## playing. May change at any time (e.g. a Draw / Rotate toggle).
+func captures_ray_strokes() -> bool:
+	return false
+
+
+## A ray stroke event (see the class notes): board-space ray, unit direction.
+func _on_ray_stroke(_phase: StrokePhase, _origin: Vector3, _direction: Vector3) -> void:
+	pass
+
+
+## Return true to receive two-finger pinch / twist (_on_board_pinch).
+func captures_pinch() -> bool:
+	return false
+
+
+func _on_board_pinch(_scale: float, _twist: float) -> void:
+	pass
+
+
+## True if a screen point is on this game's own UI (not a board touch).
+func is_over_game_ui(_screen: Vector2) -> bool:
+	return false
+
+
 # --- Queries ---------------------------------------------------------------------
 
 ## Footprint in metres at scale 1 (x = width, y = depth).
@@ -183,6 +225,13 @@ func get_status() -> String:
 
 func request_exit() -> void:
 	exit_requested.emit()
+
+
+## Ask for a different airspace height (metres at scale 1). The platform
+## clamps it to the box limits, saves it like the player's choice and calls
+## _on_box_changed if it changed.
+func request_box_height(height: float) -> void:
+	box_height_requested.emit(height)
 
 
 # --- Platform side (GameHost calls these; games should not) ------------------------
@@ -237,6 +286,20 @@ func lg_drag(from: Vector3, to: Vector3) -> bool:
 	if not _playing or not captures_drag():
 		return false
 	_on_board_drag(from, to)
+	return true
+
+
+func lg_ray_stroke(phase: StrokePhase, origin: Vector3, direction: Vector3) -> bool:
+	if not _playing or not captures_ray_strokes():
+		return false
+	_on_ray_stroke(phase, origin, direction)
+	return true
+
+
+func lg_pinch(scale_factor: float, twist: float) -> bool:
+	if not _playing or not captures_pinch():
+		return false
+	_on_board_pinch(scale_factor, twist)
 	return true
 
 

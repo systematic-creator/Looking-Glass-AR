@@ -1,6 +1,6 @@
 # 3D Model Game: Tattoo Studio
 
-Status: planned (branch `3d-model-game`). Requested 2026-11-18.
+Status: first version built on branch `3d-model-game` (see `games/tattoo_studio/README.md` and `MODELS.md`). Requested 2026-11-18.
 
 ## Purpose
 A Looking Glass game that is fun on its own and doubles as a test bed for future 3D models: any humanoid model that drops into the slots below should work for viewing, scaling and painting.
@@ -45,3 +45,14 @@ Three very general base models, scale-adjustable:
 
 ## Depends on
 The anchoring/stability work on main (lock stability, slide, tracking-loss recovery) should land first.
+
+## Built (first version)
+- Platform: manifest `tall_box` exception (cap 2.5 x long side, max 2.0 m), LGGame ray strokes (`captures_ray_strokes` / `_on_ray_stroke`), pinch / twist (`captures_pinch` / `_on_board_pinch`), game UI hit test (`is_over_game_ui`), `request_box_height`.
+- Game: procedural male / female / lizard man with atlas UVs, mesh ray casts, 3D-distance brush stamping across seams, layered Beer-Lambert ink with once-per-stroke deposits, eraser, Draw / Rotate, size slider with the box following, Focus close-up (magnify about a tapped spot), per-model session persistence, Clear all with confirmation.
+- Object permanence: the model is a child of the plane-attached board and never re-centres; only the turntable yaw, the display scale (about the feet) and the temporary focus magnification change, and ink lives in the model's UV texture.
+- Tests: `tests/tattoo_tests.gd`.
+
+## Next
+- Save / export the ink texture across app restarts; undo.
+- Skin textures from model files; white / highlight inks (need an additive layer).
+- Magnified inset view as an alternative to Focus.

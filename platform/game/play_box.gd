@@ -14,6 +14,11 @@ extends RefCounted
 ## the adjust step, and always capped by the platform: at most
 ## MAX_HEIGHT_RATIO x the footprint's longer side and at most
 ## ABSOLUTE_MAX_HEIGHT (so a box is never a tower over a small board).
+##
+## Tall-box exception: a manifest with `tall_box = true` (games that stand
+## life-size things on the floor, e.g. Tattoo Studio's humanoid models) is
+## capped at TALL_HEIGHT_RATIO x the longer side and at most TALL_MAX_HEIGHT
+## instead. The placement scale still shrinks the whole box on a table.
 
 ## Hard cap on the airspace at placement scale 1 (metres).
 const ABSOLUTE_MAX_HEIGHT: float = 0.6
@@ -21,6 +26,9 @@ const ABSOLUTE_MAX_HEIGHT: float = 0.6
 const MAX_HEIGHT_RATIO: float = 1.5
 ## Smallest airspace a game can ask for (metres at scale 1).
 const MIN_HEIGHT: float = 0.02
+## Tall-box exception (LGGameManifest.tall_box): hard cap and footprint ratio.
+const TALL_MAX_HEIGHT: float = 2.0
+const TALL_HEIGHT_RATIO: float = 2.5
 
 ## Width (x), height (y), depth (z) in board units.
 var size: Vector3 = Vector3(0.4, 0.15, 0.4)
@@ -30,9 +38,13 @@ var max_height: float = ABSOLUTE_MAX_HEIGHT
 var preferred_height: float = 0.15
 
 
-## The platform cap for a footprint (metres at scale 1).
-static func height_cap(footprint: Vector2) -> float:
-	return minf(ABSOLUTE_MAX_HEIGHT, maxf(footprint.x, footprint.y) * MAX_HEIGHT_RATIO)
+## The platform cap for a footprint (metres at scale 1); `tall` = the
+## manifest's tall-box exception.
+static func height_cap(footprint: Vector2, tall: bool = false) -> float:
+	var longer: float = maxf(footprint.x, footprint.y)
+	if tall:
+		return minf(TALL_MAX_HEIGHT, longer * TALL_HEIGHT_RATIO)
+	return minf(ABSOLUTE_MAX_HEIGHT, longer * MAX_HEIGHT_RATIO)
 
 
 ## Box for a manifest: limits resolved and capped, height = `height` (e.g. the
@@ -40,7 +52,7 @@ static func height_cap(footprint: Vector2) -> float:
 static func from_manifest(manifest: LGGameManifest, height: float = -1.0) -> PlayBox:
 	var box := PlayBox.new()
 	var footprint: Vector2 = manifest.board_size if manifest != null else Vector2(0.4, 0.4)
-	var cap: float = height_cap(footprint)
+	var cap: float = height_cap(footprint, manifest != null and manifest.tall_box)
 	var preferred: float = 0.15
 	var lo: float = MIN_HEIGHT
 	var hi: float = cap

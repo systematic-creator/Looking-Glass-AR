@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="LGGameManifest" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://platform/game/lg_game_manifest.gd" id="1_manifest"]
+[ext_resource type="Texture2D" path="res://games/tattoo_studio/icon.svg" id="2_icon"]
+
+[resource]
+script = ExtResource("1_manifest")
+id = &"tattoo_studio"
+display_name = "Tattoo Studio"
+description = "Tattoo a life-size (floor) or miniature (table) model: male, female or lizard man. Draw on the body with the needle, go over a line again to deepen it, erase, rotate the model on its turntable and use Focus for close-up work. Also the test bed for new 3D models."
+icon = ExtResource("2_icon")
+min_players = 1
+max_players = 1
+board_size = Vector2(1.1, 1.1)
+board_height = 1.9
+box_height = 1.92
+box_min_height = 0.25
+box_max_height = 2.0
+tall_box = true
+entry = "res://games/tattoo_studio/tattoo_studio.tscn"
+version = "0.1.0"
+author = "Looking Glass"
+tags = PackedStringArray("3d", "creative", "models")

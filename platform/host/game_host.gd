@@ -71,6 +71,8 @@ var _status_press_time: float = -1.0
 var _clip_version: int = -1
 var _clip_anchor: Transform3D = Transform3D()
 var _status_press_pos: Vector2 = Vector2.ZERO
+## Finger index of the ray stroke in progress (LGGame ray strokes), or -1.
+var _stroke_index: int = -1
 
 
 func _ready() -> void:
@@ -141,6 +143,10 @@ func _load_game() -> bool:
 	game.status_changed.connect(func(_text: String) -> void: refresh_status())
 	game.playing_changed.connect(func(_playing: bool) -> void: refresh_status())
 	game.exit_requested.connect(exit_game)
+	game.box_height_requested.connect(_on_game_box_request)
+	game.playing_changed.connect(func(playing: bool) -> void:
+		if not playing:
+			_stroke_index = -1)
 	game.lg_board_ready()
 	refresh_status()
 	game_loaded.emit(game)
@@ -151,6 +157,7 @@ func _on_board_lock_changed(locked: bool) -> void:
 	if game != null:
 		game.lg_set_locked(locked)
 	_dragging_board = false
+	_stroke_index = -1
 	_gestures.reset()
 	refresh_status()
 
@@ -168,6 +175,15 @@ func set_box_height(height: float) -> void:
 		session.configure_box(box)
 	if not is_equal_approx(before, box.height()):
 		game.lg_set_box(box)
+
+
+## The game asked for another airspace height: same path as the player's
+## slider (saved with the placement, clamped, outline rebuilt).
+func _on_game_box_request(height: float) -> void:
+	if session != null:
+		session.set_box_height(height)
+	else:
+		set_box_height(height)
 
 
 ## Pickable height for taps: the game's surface, kept inside the box.
@@ -275,6 +291,8 @@ func is_over_platform_ui(screen: Vector2) -> bool:
 		return true
 	if debug_button != null and debug_button.visible and debug_button.get_global_rect().has_point(screen):
 		return true
+	if game != null and game.is_over_game_ui(screen):
+		return true
 	return session != null and session.hud != null and session.hud.is_over_ui(screen)
 
 
@@ -296,10 +314,49 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
 		if is_over_platform_ui((event as InputEventScreenTouch).position):
 			return
+	_route_ray_stroke(event)
 	var gesture: Dictionary = _gestures.handle(event)
 	if session.captures_touch() or gesture.is_empty():
 		return
 	route_gesture(gesture)
+
+
+## True while the game takes one-finger ray strokes (LGGame.captures_ray_strokes).
+func game_takes_strokes() -> bool:
+	return game != null and game.is_playing() and game.captures_ray_strokes() and not session.captures_touch()
+
+
+## One finger's press / moves / release -> LGGame ray stroke events (board
+## space). Called before the gesture tracker sees the event, so its touch
+## count is the count before this event. A second finger cancels the stroke.
+func _route_ray_stroke(event: InputEvent) -> void:
+	if not game_takes_strokes():
+		if _stroke_index >= 0 and game != null:
+			game.lg_ray_stroke(LGGame.StrokePhase.CANCEL, Vector3.ZERO, Vector3.FORWARD)
+		_stroke_index = -1
+		return
+	var camera: Camera3D = active_camera()
+	if event is InputEventScreenTouch:
+		var touch: InputEventScreenTouch = event
+		if touch.pressed:
+			if _stroke_index < 0 and (touch.index == 0 or _gestures.touch_count() == 0):
+				_stroke_index = touch.index
+				var ray: Array[Vector3] = screen_ray_in_board(camera, game, touch.position)
+				game.lg_ray_stroke(LGGame.StrokePhase.BEGIN, ray[0], ray[1])
+			elif _stroke_index >= 0:
+				var ray2: Array[Vector3] = screen_ray_in_board(camera, game, touch.position)
+				game.lg_ray_stroke(LGGame.StrokePhase.CANCEL, ray2[0], ray2[1])
+				_stroke_index = -1
+		elif touch.index == _stroke_index:
+			var ray3: Array[Vector3] = screen_ray_in_board(camera, game, touch.position)
+			var phase: LGGame.StrokePhase = LGGame.StrokePhase.CANCEL if touch.canceled else LGGame.StrokePhase.END
+			game.lg_ray_stroke(phase, ray3[0], ray3[1])
+			_stroke_index = -1
+	elif event is InputEventScreenDrag:
+		var drag: InputEventScreenDrag = event
+		if drag.index == _stroke_index:
+			var ray4: Array[Vector3] = screen_ray_in_board(camera, game, drag.position)
+			game.lg_ray_stroke(LGGame.StrokePhase.MOVE, ray4[0], ray4[1])
 
 
 ## Send one gesture (from GestureTracker) to the game or the camera.
@@ -326,10 +383,12 @@ func route_gesture(gesture: Dictionary) -> void:
 				var to: Variant = screen_to_board(camera, game, gesture["to"] as Vector2, pick_height())
 				if from != null and to != null:
 					game.lg_drag(from as Vector3, to as Vector3)
-			elif not session.is_ar():
+			elif not session.is_ar() and not game_takes_strokes():
 				orbit_camera.orbit((gesture["to"] as Vector2) - (gesture["from"] as Vector2))
 		&"pinch":
-			if not session.is_ar():
+			if game.captures_pinch() and game.is_playing():
+				game.lg_pinch(float(gesture["scale"]), float(gesture.get("twist", 0.0)))
+			elif not session.is_ar():
 				orbit_camera.zoom(float(gesture["scale"]))
 
 
