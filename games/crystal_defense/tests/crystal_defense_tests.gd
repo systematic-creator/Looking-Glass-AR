@@ -630,7 +630,7 @@ func _test_save_shape() -> void:
 	var sim: CDSim = _prep_sim(60)
 	sim.build(&"arrow", Vector2i(3, 6))
 	var d: Dictionary = sim.to_run_save()
-	check("save: run snapshot (slot run, doc 3.8 shape)", d.has("wave") and d.has("seed") and d.has("crystal_hp") and d["wallet"] is Dictionary and (d["towers"] as Array).size() == 1)
+	check("save: run snapshot (slot run, doc 3.8 shape)", d["world"] == "cryptid" and d["tier"] == "table" and d["grid"] == [12, 12] and d.has("wave") and d.has("seed") and d.has("crystal_hp") and d["wallet"] is Dictionary and (d["towers"] as Array).size() == 1)
 	check("save: JSON-safe", JSON.parse_string(JSON.stringify(d)) is Dictionary)
 	check("save: phase machine serialises", sim.phases.to_save().has("phase"))
 

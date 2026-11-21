@@ -313,7 +313,7 @@ func upgrade(id: int) -> bool:
 	var stats: Dictionary = CDDefs.level_stats(s["type"], s["level"])
 	if stats.has("hp"):
 		s["hp"] = float(stats["hp"])
-	_emit(&"upgrade", {"id": id, "level": s["level"]})
+	_emit(&"upgrade", {"id": id, "level": s["level"], "target": "first"})
 	return true
 
 
@@ -1184,12 +1184,13 @@ func drain_events() -> Array[Dictionary]:
 func to_run_save() -> Dictionary:
 	var towers: Array = []
 	for s: Dictionary in structures.values():
-		towers.append({"kind": str(s["type"]), "cell": [s["cell"].x, s["cell"].y], "level": s["level"]})
+		towers.append({"kind": str(s["type"]), "cell": [s["cell"].x, s["cell"].y], "level": s["level"], "target": "first"})
 	var sq: Array = []
 	for q: Dictionary in squads.values():
 		sq.append({"unit": str(q["unit"]), "rank": q["rank"], "size": squad_size(q), "exp": q["exp"], "upgrades": q["upgrades"], "cell": [q["cell"].x, q["cell"].y]})
 	return {
-		"level": "cryptid", "difficulty": "normal", "wave": wave, "seed": seed_value,
+		"world": "cryptid", "difficulty": "normal", "tier": "table", "grid": [grid.nx, grid.ny],
+		"wave": wave, "seed": seed_value,
 		"crystal_hp": crystal_hp, "wallet": wallet.to_save(), "towers": towers, "squads": sq,
 		"autostart_streak": auto_streak,
 	}

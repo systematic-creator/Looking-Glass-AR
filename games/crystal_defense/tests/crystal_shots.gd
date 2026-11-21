@@ -51,11 +51,12 @@ func run_tests() -> void:
 	game.start_wave()
 	for i in 170:
 		game._process(1.0 / 20.0)
-	game.tap_cell(Vector2i(3, 5))
+	game.toggle_ranges()
 	await frames(10)
 	await _save(out + "/crystal_midwave_landscape.png")
 	await free_host(host)
 	CrystalDefenseGame.next_seed = -1
+	get_tree().quit()
 
 
 ## A closer orbit view than the default fit (the default frames the whole box).
