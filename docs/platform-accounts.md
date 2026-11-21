@@ -14,6 +14,16 @@ Direction agreed with the owner, modelled on how Roblox splits things:
 3. **Creator tools later, as a separate tool** (like Roblox Studio), not
    inside the phone app.
 
+### Decisions (owner, 20 Nov 2026)
+
+| # | Question | Decision |
+| --- | --- | --- |
+| D1 | Audience | **13+ only.** No under-13 audience: no Kids mode, COPPA out of scope. A basic age gate and terms note (13+) before sign-in. Global leaderboards and display names are fine, with basic name filtering (section 7). |
+| D2 | Shared currency | **Earned and purchasable eventually, earn-only to start.** Purchase sections are visible in the UI behind a "Coming soon" sign; the store UI and the Google Play Billing integration are designed now and built later (section 10). |
+| D3 | iOS | **Out of scope** for now (no Apple device for signing / ARKit). Android only; no Sign in with Apple. |
+| D4 | Multiplayer | **Shared-board multiplayer is likely within about a year.** The backend recommendation is therefore **Nakama**, behind the `LGBackend` interface, with Supabase as the alternative (section 6; multiplayer in section 9). |
+| D5 | Tattoo ink | **Phone only** for now (local blobs, never synced). |
+
 This doc fixes the shapes that games code against first (`LGProfile`,
 `LGSave`, `LGScores`), so that the games, including **Crystal Defense**
 (being built on `crystal-defense`), can adopt them before any backend
@@ -45,7 +55,10 @@ Looking Glass app (one Godot app, one AR session)
 ├── LGProfile    who is playing (local guest first, account later)
 ├── LGSave       per-profile, per-game, namespaced slots on user://
 ├── LGScores     per-game leaderboards and stats (local first)
-└── LGBackend    one interface; adapters: Offline (P1), Supabase (P2+)
+├── LGWallet     shared currency (server-authoritative, P5)
+├── LGMatch      shared-board multiplayer session (section 9)
+└── LGBackend    one interface; adapters: Offline (P1), Nakama (P2+),
+        │        Supabase as the alternative
         └── Sync engine: outbox, revisions, conflict resolution
 ```
 
@@ -64,7 +77,7 @@ Rules:
 
 ## 2. The hub (in Looking Glass)
 
-The launcher grows into **Home**, with three tabs. Same app, same AR
+The launcher grows into **Home**, with four tabs. Same app, same AR
 session: going from the hub into a game and back never restarts tracking
 (the session is created by GameHost as today).
 
@@ -74,7 +87,8 @@ session: going from the hub into a game and back never restarts tracking
 | --- | --- |
 | **Play** (default) | The current catalog cards, plus a progress line per card ("Best 4210", "12 / 30 stars", "Run in progress") and a "Continue" badge when a game has a resumable run slot. Tapping a card opens the game sheet. |
 | **Profile** | Avatar (colour + glyph), display name, "Playing as guest" / signed-in account, totals (play time, games played, sessions), a per-game progress list, and local leaderboards per game. |
-| **Settings** | Profile switch (local profiles on this phone), sign in / link (P2), sound, haptics, reduced motion, left-handed HUD, AR (forget saved placements, tracking help), data (export, reset a game, delete profile / account), about and privacy policy, debug overlay. |
+| **Store** | The shared currency balance, ways to earn it, things to spend it on, and the purchase section behind "Coming soon" (section 10). |
+| **Settings** | Profile switch (local profiles on this phone), sign in / link (P2), age and terms (13+), sound, haptics, reduced motion, left-handed HUD, AR (forget saved placements, tracking help), data (export, reset a game, delete profile / account), about and privacy policy, debug overlay. |
 
 **Game sheet** (from a card): art, description, board size and orientation
 hint, your progress, the game's leaderboards (local top 10 in P1; friends /
@@ -97,7 +111,7 @@ Same rules as the launcher today (`LGOrientation`, base canvas 1280 x 720
 
 | | Portrait (720 x 1280+) | Landscape (1280+ x 720) |
 | --- | --- | --- |
-| Navigation | Bottom tab bar (Play / Profile / Settings), thumb reach | Left rail with the three tabs |
+| Navigation | Bottom tab bar (Play / Profile / Store / Settings), thumb reach | Left rail with the four tabs |
 | Play | One wide list row per game (as the launcher is now) | One row of cards (as now), or two rows past 6 games |
 | Profile | Header (avatar, name, account chip) on top; stats grid 2 columns; per-game list below | Header + stats on the left half, per-game list and leaderboards on the right |
 | Game sheet | Bottom sheet, 85% height, Play pinned at the bottom | Right-side panel, 45% width, Play pinned at the bottom |
@@ -292,7 +306,7 @@ cannot open another game's slot), profile isolation.
 | Stack Tower | best height, style | none | Style is a game setting |
 | Mage Run | best score, total coins, settings (from `user://mage_run.cfg`) | optional: none for now (runs are short) | Leaderboard `best_score` |
 | Tic-Tac-Toe | board size, score history per size | none | |
-| Tattoo Studio | per model: scale, yaw, last tools | per model ink atlas as blobs (`ink_<model>.blob`, local) | Ink is large: local first; cloud later as an opt-in |
+| Tattoo Studio | per model: scale, yaw, last tools | per model ink atlas as blobs (`ink_<model>.blob`, local) | **Ink stays on the phone (D5)**: never synced; reinstalling or a new phone starts with clean skin |
 | Competitive Evolution | none | none | Placeholder |
 | Placement (platform) | device-local | | Moved from `user://lg_placement_<id>.cfg` |
 
@@ -338,9 +352,14 @@ agree with that worker before either side codes it:
 - **`Wallet`** gets `to_save() -> Dictionary` / `static from_save(d)`
   (balance and totals; the transaction log is not saved). This mana wallet
   is **per run** and stays in the game. The later **shared currency** is a
-  separate, server-authoritative platform ledger (`LGWallet`, P4). The two
+  separate, server-authoritative platform ledger (`LGWallet`, P5, a Nakama
+  wallet). The two
   must not be mixed: a game can award shared currency only through a
   platform call that the server checks.
+- **Multiplayer later** (section 9): keep the simulation deterministic and
+  free of nodes where possible (fixed tick from `SimClock`, seeded RNG,
+  inputs as commands such as "build arc at (3, 5)"), so a co-op mode can run
+  the same simulation in a Nakama authoritative match.
 - **Leaderboards** (manifest `leaderboards`, section 4.2): `best_wave_<level>`
   (higher is better) and `fastest_<level>` (time in ms, lower is better).
 - Until `LGSave` lands, Crystal Defense can write the same JSON through a
@@ -354,30 +373,35 @@ agree with that worker before either side codes it:
 ### 4.1 Identity model
 
 ```
-Device ──has── Local profiles (1..4) ──may link to── Account (P2)
-                                                       └── Identities: guest (anonymous), Google, email, (Apple, iOS)
+Device ──has── Local profiles (1..4) ──may link to── Account (P2, a Nakama user)
+                                                       └── Identities: device (guest), Google, email
 ```
 
 - **Guest / local profile first (P1).** A profile is a random UUID v4 with a
   display name and avatar, created on first launch. No network, no
-  personal data. Up to 4 local profiles per phone (a family sharing one
-  phone), switched in Settings.
-- **Account (P2).** Turning on cloud features creates a backend user for
-  the profile: first an **anonymous** backend user (no personal data; lets
-  sync start), later **upgraded** by linking a real identity.
-- **Sign-in providers**, in order:
-  1. **Google** (Android Credential Manager, an OpenID ID token; the
-     backend verifies it). The natural default on Android.
-  2. **Email** one-time code or magic link (no passwords to store).
-  3. **Sign in with Apple** if and when there is an iOS build (Apple requires
-     it when other social logins are offered).
-  4. **Google Play Games Services** later, only if achievements or Play's
-     player ID are wanted; it is not an OpenID login, so it needs a
-     server-side auth-code exchange.
-- **Linking.** One account can hold several identities. Signing in on a new
-  phone with the same Google account restores the account's profile.
-  Linking an identity already attached to another account asks which
-  account to keep and merges (section 5.3).
+  personal data. Up to 4 local profiles per phone (a family or friends
+  sharing one phone), switched in Settings.
+- **Account (P2).** Turning on cloud features creates a Nakama user for the
+  profile with **device authentication** (`authenticate_device` with a
+  per-profile random id stored in `profile.json`, not a hardware id). That
+  is a real account with no personal data, so sync and leaderboards work
+  for guests too.
+- **Upgrading and linking** (Nakama link APIs; the account id never
+  changes, so saves and scores stay):
+  1. **Google**: Android Credential Manager returns a Google ID token;
+     `link_google` attaches it to the guest account (or
+     `authenticate_google` on a new phone restores it). The default on
+     Android.
+  2. **Email + password**: `link_email` / `authenticate_email` (Nakama
+     stores a bcrypt hash). Magic links or one-time codes are not built in;
+     add them later with a custom auth flow if wanted.
+  3. **Google Play Games Services** only if achievements or Play's player
+     id are wanted later (it needs a server-side auth-code exchange in a
+     custom auth hook).
+  4. **Apple: out of scope (D3).**
+- **Linking conflicts.** Linking an identity already attached to another
+  account asks which account to keep and merges (section 5.3); the other
+  account is then deleted.
 - **First sign-in with existing guest progress:** if the account is empty,
   the guest's data is uploaded. If both have data, per game: keep this
   phone's, keep the account's, or merge (the game's `_save_merge`, or the
@@ -385,6 +409,10 @@ Device ──has── Local profiles (1..4) ──may link to── Account (P2
   as a conflict backup for 30 days.
 - **Sign-out** keeps the local profile as a guest copy, or removes it from
   this phone if the user asks.
+- **Age gate and terms (D1):** before the first sign-in (and before any
+  online feature for a guest) the app asks for a birth year and shows the
+  terms and privacy note: Looking Glass is for **13 and over**. Under 13:
+  online features stay off and the profile stays local; no data is sent.
 
 `LGProfile` (platform, read-only to games): `id`, `display_name`,
 `avatar`, `is_guest()`, `account_id` (empty offline). Games get
@@ -425,7 +453,13 @@ record_stat(&"waves_cleared", 1)        # summed per profile (and globally, late
   for API parity).
 - **Cloud (P3):** every submission also goes into the **outbox** with an
   idempotency key and is uploaded when online; `FRIENDS` and `GLOBAL`
-  scopes then read from the backend (cached for offline viewing).
+  scopes then read from the backend (cached for offline viewing). On
+  Nakama each `LGLeaderboardDef` becomes a server-created leaderboard named
+  `<game_id>.<board_id>` with sort order from `order`, operator `best`, an
+  optional cron reset (`reset`), and **authoritative** set, so clients
+  cannot write records directly: the client calls an RPC
+  (`lg_submit_score`) that validates (5.4) and then writes the record.
+  Weekly boards can use Nakama tournaments.
 - `LGScoreEntry`: `rank`, `value`, `display_name`, `avatar`, `is_self`,
   `submitted_at`, `verified` (server checked).
 
@@ -444,10 +478,20 @@ record_stat(&"waves_cleared", 1)        # summed per profile (and globally, late
   (debounced), app background (best effort), and a manual "Sync now" in
   Settings. Never while a game is mid-frame-critical (uploads run on a
   thread; the HTTP client is async).
-- **Outbox:** score submissions, stat increments and (P4) currency
+- **Outbox:** score submissions, stat increments and (P5) currency
   operations are queued as operations with idempotency keys, uploaded in
   order, and retried with backoff. Saves are not queued as operations; the
   latest document wins its slot (5.2).
+
+**On Nakama:** a slot is a **storage object**: collection
+`save.<game_id>`, key `<slot>`, owner the user, value the envelope (JSON
+object), `permission_read = 1` (owner only), `permission_write = 1`.
+Nakama gives every object a **version** (a hash) and supports conditional
+writes: writing with the version you last read fails if the object changed
+since, which is exactly the `base_rev` check below; `version = "*"` means
+"create only if absent". The phone stores the last Nakama version next to
+`base_rev`. Conflict backups go to collection `save_conflict.<game_id>`
+(server-written, 30-day cleanup job).
 
 ### 5.2 Upload and download
 
@@ -513,85 +557,111 @@ APK can be extracted). So:
 
 | Option | What it is | Fit for Looking Glass | Cost notes (checked Nov 2026; verify before buying) |
 | --- | --- | --- | --- |
-| **Supabase** | Hosted Postgres + Auth (anonymous, Google ID token, email OTP, Apple) + row-level security + Edge Functions (TypeScript) + storage. Open source, self-hostable. | Saves as JSONB rows, leaderboards as SQL (indexes, window functions), score validation in Edge Functions, account deletion as one transaction. Community Godot clients, or plain HTTPS (`HTTPRequest`) against its REST API. | Free: 50k MAU, 500 MB DB, 1 GB files, 2 projects, but **paused after 1 week of inactivity**. Pro from **$25/month** (100k MAU, 8 GB disk, daily backups, never paused). |
-| **Firebase** | Firestore (documents), Firebase Auth, Cloud Functions, Google-native. | Great Android and Google sign-in story. Leaderboard queries (rank of a player, top N per period) are awkward in a document store; costs scale with reads (every leaderboard view). Godot support via a community addon. | Spark (free): Firestore 1 GiB, 50k reads / 20k writes per day. Blaze: pay as you go (about $0.03 / 100k reads, $0.09 / 100k writes), Functions need Blaze, **no hard spending cap**. |
-| **Nakama** (Heroic Labs) | Open-source game server: accounts, device / Google / Apple auth, storage objects, leaderboards and tournaments, friends, groups, chat, realtime multiplayer, server code in Go / TS / Lua. Official Godot client. | The most "game-shaped" option: leaderboards, friends, wallets and realtime are built in, which fits the later **shared-anchor multiplayer** goal. But self-hosting means running and patching a server plus its database. | Self-host: a small VPS + Postgres (roughly $10-30/month) plus ops time. Heroic Cloud (managed) is quoted by CPU through a calculator, priced for studios. |
-| **PlayFab** (Microsoft) | Managed game backend: player accounts, player data, statistics / leaderboards, economy, CloudScript. | Feature-complete, but no official Godot SDK (REST only), metered pricing, and the free Development Mode caps at **1,000 lifetime players per title**. Foundation Mode (free core services) applies to games shipping on the Xbox Store, not this Android app. | Pay-as-you-go meters (for example about $7 per million profile writes), Standard **$99/month**, Premium $1,999/month. |
-| **Custom** (for example a small Go / Node service + Postgres on a VPS or Cloud Run) | Exactly what we need. | Most control and cheapest at tiny scale, but auth, token verification, deletion, backups, abuse handling and security are all on us. The wrong use of a solo developer's time now. | $5-20/month infra, plus a lot of engineering time and on-call. |
+| **Nakama** (Heroic Labs, Apache 2.0) | Game server: accounts (device, Google, email, custom) with linking, storage objects with versions and permissions, leaderboards and tournaments, friends and groups, wallets with a ledger, in-app purchase validation, matchmaker, **relayed and authoritative realtime matches**, server code in Go, TypeScript or Lua. Official Godot 4 client in GDScript. | The only option that covers every phase including **shared-board multiplayer (D4)** in one service. Costs: a server and database to run, and server code in a second language. | Self-host: Docker image plus Postgres on a small VPS, roughly **$10-30/month**. Heroic Cloud (managed): priced per Nakama CPU and database CPU through a calculator, no public list price, aimed at studios; support plans from $2,000. |
+| **Supabase** (alternative) | Hosted Postgres + Auth (anonymous, Google ID token, email OTP) + row-level security + Edge Functions + storage. Open source, self-hostable. | Excellent for accounts, saves and SQL leaderboards with no server to run. No game realtime: multiplayer would need a second service. | Free: 50k MAU, 500 MB DB, paused after 1 week idle. Pro from **$25/month**. |
+| **Firebase** | Firestore, Firebase Auth, Cloud Functions. | Good Google sign-in; leaderboard queries awkward in a document store; read-metered costs; no game realtime. Community Godot addon. | Spark free: 1 GiB, 50k reads / 20k writes per day. Blaze pay as you go, no hard spending cap. |
+| **PlayFab** | Managed game backend. | No official Godot SDK (REST only); free Development Mode caps at 1,000 lifetime players per title; Foundation Mode only for Xbox Store games. | Pay-as-you-go meters, Standard $99/month. |
+| **Custom** | Own service + Postgres. | Auth, deletion, abuse handling and realtime all on us. | $5-20/month infra, a lot of engineering time. |
 
-### Recommendation (solo developer)
+### Recommendation (solo developer): Nakama, behind `LGBackend`
 
-**Supabase, behind the `LGBackend` interface, plain HTTPS from Godot.**
+**Why.** Shared-board multiplayer within a year (D4) needs a realtime
+match server. Nakama has it alongside everything else this doc needs:
+device-auth guests that link Google and email later, versioned storage
+objects for saves, authoritative leaderboards, friends, a wallet with a
+ledger for the shared currency, and Google purchase validation for D2.
+One backend, one account system, one place for anti-cheat code.
 
-- It covers P2-P3 with managed pieces: anonymous users that upgrade to
-  Google / email accounts (exactly the guest-first model), JSONB documents
-  with a `rev` column for optimistic concurrency, SQL leaderboards, Edge
-  Functions for score validation and account deletion, and row-level
-  security so a user can only read and write their own saves.
-- Postgres keeps an exit path: it is self-hostable and the data is
-  portable; nothing in the game code depends on Supabase.
-- Cost: develop on the **free** tier (fine for testing; it pauses after a
-  week idle, so keep a keep-alive or accept the resume), move to **Pro
-  ($25/month)** before any public test so the project never pauses and has
-  backups. Expect $25-40/month until tens of thousands of monthly players.
-- Talk to it with Godot's `HTTPRequest` and a small `SupabaseBackend`
-  adapter (auth endpoints, REST for tables, Edge Function calls) rather than
-  a third-party addon, to keep the dependency surface small and testable
-  with a fake backend (like `FakeARBridge` today).
-- **Revisit at P4 / multiplayer:** if realtime shared-anchor play becomes
-  real, Nakama is the better home for matchmaking and realtime state. The
-  `LGBackend` split lets the multiplayer service be Nakama while accounts and
-  saves stay where they are, or move everything with a migration.
+**What stays the same.** Games still only see `LGSave`, `LGScores`,
+`LGWallet` and `LGMatch`. `LGBackend` has an offline adapter (P1, tests)
+and a `NakamaBackend` adapter built on the official
+[nakama-godot](https://github.com/heroiclabs/nakama-godot) client
+(`addons/com.heroiclabs.nakama/`, used only inside `platform/backend/`).
+A `FakeBackend` (like `FakeARBridge`) drives the headless tests.
 
----
+**Hosting, in order:**
+
+1. **Development:** Nakama + Postgres with Docker Compose on the box or a
+   laptop (API on port 7350, console on 7351). Free.
+2. **Test and launch: self-host on one VPS.** 2 vCPU / 4 GB RAM (for
+   example Hetzner, DigitalOcean or a GCP e2-medium), Docker Compose with
+   Nakama, Postgres and Caddy for TLS, nightly `pg_dump` to object storage,
+   uptime monitoring. About **$10-30/month** plus a few hours a month of
+   upkeep (OS and Nakama updates). Open-source Nakama runs as a **single
+   node** (clustering is an Enterprise feature); one node handles thousands
+   of concurrent players for this kind of game. Change the default server
+   key, the console password and the `runtime.http_key` before going public.
+3. **Heroic Cloud when it pays for itself:** move when uptime, scaling or
+   on-call time matter more than the bill (managed database, backups,
+   scaling, Enterprise clustering). Quote from the calculator first; it is
+   priced for studios, so expect hundreds of dollars a month, not tens.
+
+**Server code.** One module set in **TypeScript** (Nakama's JS runtime:
+quick to iterate, no plugin build matching the server version), with Go
+reserved for hot authoritative match loops if profiling ever demands it.
+Lua is also supported but the TypeScript tooling is better. Modules
+register:
+
+- RPCs: `lg_submit_score` (validation, 5.4), `lg_wallet_earn` (server
+  rules), `lg_purchase_validate` (D2, later), `lg_delete_account` cleanup,
+  `lg_match_create` (board session, section 9);
+- leaderboards from a config file generated from the game manifests;
+- authoritative match handlers per game mode (section 9.3);
+- before / after hooks: name filtering on account updates (section 7),
+  rate limits on writes.
+
+**Alternative: Supabase.** If multiplayer is dropped or delayed past
+P4, Supabase is the simpler service to run for accounts, saves and
+leaderboards (no server to maintain; $25/month Pro). The `LGBackend`
+interface keeps that switch possible: the storage-object, leaderboard and
+wallet shapes in this doc map onto Postgres tables (`rev` column for the
+version check, SQL ranks, an Edge Function per RPC).
 
 ## 7. Privacy, data deletion and age
 
-- **Collect the minimum.** P1 collects nothing (all local). P2 stores: an
-  account id, linked identity ids and the email the provider returns (only
-  if email sign-in is used), display name, avatar, saves, scores and stats,
-  coarse device info for sync (`device_id`, app version). No location, no
-  contacts, no advertising id. **AR camera frames and room geometry never
-  leave the phone**, and saves must not contain them (placement is
-  device-local and does not sync).
-- **Store disclosures.** A privacy policy (linked in Settings and on the
-  store listing) and an accurate Google Play **Data safety** form, updated
-  with each phase.
+- **Collect the minimum.** P1 collects nothing (all local). P2 stores: the
+  Nakama account id, linked identity ids, an email only if email sign-in
+  is used, display name, avatar, birth year (for the 13+ gate), saves,
+  scores, stats and wallet ledger, and coarse device info for sync
+  (`device_id`, app version). No location, no contacts, no advertising id.
+  **AR camera frames and room geometry never leave the phone**; placement is
+  device-local and Tattoo ink stays on the phone (D5). In multiplayer, only
+  board-space game state goes over the network (section 9), never camera
+  images or the room.
+- **Store disclosures.** A privacy policy and terms (linked in Settings and
+  on the store listing) and an accurate Google Play **Data safety** form,
+  updated with each phase.
 - **Deletion.** Google Play requires apps with account creation to offer
   account deletion **in the app and through a web link**. Settings ->
-  Delete account removes the account, identities, saves, scores and conflict
-  backups server-side (one Edge Function, one transaction) and local copies
-  on this phone; leaderboard rows are removed, not anonymised. Also: delete
-  a local profile, reset one game, and **export** my data (a JSON file of
-  all slots and scores) for access / portability requests (GDPR, CCPA).
+  Delete account calls Nakama's account delete (which removes the user and
+  their data) plus an after-hook that removes anything else keyed by the
+  user (leaderboard records, conflict backups); a small web page with the
+  same flow covers the web link. Also: delete a local profile, reset one
+  game, and **export** my data (a JSON file of all slots, scores and the
+  wallet ledger) for access / portability requests (GDPR, CCPA).
 - **Retention.** Conflict backups 30 days; deleted accounts purged from
-  backups within the backup window (7 days on Supabase Pro). Logs without
-  personal data.
-- **Age.** Decide the audience first (open question 1):
-  - If the app is **directed at children under 13** (or we learn a player is
-    under 13), US **COPPA** applies: verifiable parental consent before
-    collecting personal information (which includes persistent identifiers
-    used beyond internal operations, and free-text names or photos), a
-    children's privacy notice, and data minimisation. The FTC's amended
-    COPPA rule (2025) adds written data-retention and security
-    requirements. On Google Play this also means the **Families policy**
-    (Designed for Families requirements, limits on SDKs).
-  - In the EU and UK the age of digital consent is 13-16 depending on the
-    country (GDPR Art. 8), and the UK Age Appropriate Design Code expects
-    high-privacy defaults for under-18s.
-  - **Practical design:** a neutral age prompt (birth year, no default)
-    before sign-in or any social feature. Under 13 (or local threshold):
-    **Kids mode**, local profiles only, no account, no global leaderboards
-    (this-phone boards only), names chosen from word lists only, no friends
-    or chat; cloud backup only through a parent's account flow if we ever
-    build one. 13+: the normal flow, still with no free-text chat at first.
-  - Display names: word-list generated by default; free-text names (P2+)
-    go through a profanity filter and a report button.
-- **Security basics.** Row-level security on every table, server-side
-  validation for anything shared, tokens in the platform only (never in
-  game code), HTTPS only, secrets only in Edge Function config.
-
----
+  database backups within the backup rotation (keep it at 7-14 days). Logs
+  without personal data.
+- **Age (D1): 13+ only.** No under-13 audience, so no Kids mode and COPPA is
+  out of scope. A neutral age gate (birth year, no default) and a terms
+  note before sign-in or any online feature. Under 13: online features stay
+  off. The store listing's target audience is 13+. In the EU the age of
+  digital consent is 13-16 depending on the country (GDPR Art. 8); since
+  the app needs no consent-based processing for its core features (saves
+  and scores are contract necessity, there are no ads or analytics), the
+  gate plus terms is enough at this stage. Revisit if ads, analytics or
+  chat are added.
+- **Display names and leaderboards.** Global leaderboards and free-text
+  display names are allowed. Names: 3-16 characters, letters, digits,
+  spaces and `_-`; a server-side filter (word list with leetspeak
+  normalisation, in a Nakama before-hook) rejects slurs and profanity;
+  generated names ("Brave Otter") remain the default; a report button on
+  leaderboard rows; repeated reports reset the name to a generated one. No
+  chat for now.
+- **Security basics.** Storage permissions owner-only, authoritative
+  leaderboards and wallet (server writes only), validation in RPCs, tokens
+  in the platform only (never in game code), TLS only, server key and
+  secrets only on the server.
 
 ## 8. Creator tools roadmap (later, a separate tool)
 
@@ -646,34 +716,137 @@ audience.
 
 ---
 
-## 9. Milestones
+## 9. Shared-board multiplayer (brief)
 
-| Phase | Scope | Done when |
+Goal (D4, within about a year): two or more phones in the same room play
+on **one shared board**, each seeing it from their own side.
+
+### 9.1 One board for every phone
+
+Everything in Looking Glass already lives in **board space** (games, taps,
+rays, the play box), and only the board's anchor is in world space. So
+phones only need to agree on the **board's pose**; all game state can be
+exchanged in board coordinates and every phone renders it from its own
+anchor. Options for agreeing on the pose, simplest first:
+
+| Option | How | Tradeoff |
 | --- | --- | --- |
-| **P1: local profile, save API, hub** | `LGProfile` (guest, up to 4 local), `LGSave` (slots, envelope, migrations, autosave hooks, atomic writes, blobs), `LGScores` local (manifest leaderboards, local top 20, stats), hub (Play / Profile / Settings, game sheet, progress summaries) in both orientations; migrate Stack Tower, Mage Run, Tic-Tac-Toe, Tattoo Studio (settings and local ink blobs) and placement files; Crystal Defense adopts `main` and `run` slots; data export and per-game reset; `save_tests` and hub layout tests | Bests, progress and Tattoo ink survive an app restart; a corrupted or half-written save falls back cleanly; hub passes the orientation layout checks; everything works in airplane mode |
-| **P2: accounts and cloud saves** | `LGBackend` interface, fake backend for tests, Supabase adapter; anonymous account per profile, Google and email sign-in, linking; cloud sync of `main` slots with revisions, merge hooks and conflict backups; in-app and web account deletion; privacy policy and Data safety update; age prompt and Kids mode | Progress moves to a second phone by signing in; conflicts resolve as specified; deleting an account removes all server data |
-| **P3: online leaderboards** | Outbox submissions, server validation (bounds, rates, evidence), friends-less global and "this week" boards, verified flags, review queue; optional replay verification for Mage Run | Global boards show verified scores; obviously forged submissions are rejected in tests |
-| **P4: friends and shared currency** | Friends (invite codes, no search for minors), friends' boards; a server-authoritative shared currency ledger (`LGWallet`, earn rules on the server, idempotent operations); no purchases until the IAP questions are answered | Friends see each other's scores; currency balances cannot be changed by editing a save |
-| **P5: creator tools alpha** | `.lgpkg` for first-party games, sandbox scripting prototype, Studio alpha, automated review checks | A non-bundled game installs from a package and passes the platform tests |
+| **Fit the same table** | Each phone runs the normal calibration on the same table; the host's board size and the fitted edges (Fit edges already snaps to a real table) give the same rectangle; a "which corner is mine" tap resolves the rotation, plus a small nudge control | No new services; a few cm of error, fine for board games and Crystal Defense, weaker for precise shared pointing |
+| **Printed marker** | ARCore Augmented Images: the board is placed relative to a printed card on the table | Very consistent; needs a printed card |
+| **ARCore Cloud Anchors** | The host hosts the anchor; guests resolve it by id (Google Cloud ARCore API, with an API key or OAuth; longer persistence needs OAuth) | Most automatic; sends visual feature data to Google (a privacy note and a Google Cloud project), resolve can fail in plain rooms |
 
-Each phase ships with headless tests like today's suites, and the APK keeps
-working fully offline.
+Start with **fit the same table** (it reuses the platform's calibration),
+add Cloud Anchors as an option later.
+
+### 9.2 Session flow
+
+1. Host picks a game and **Play together**; the platform creates a Nakama
+   match (`lg_match_create`) and shows a 6-character join code (and a QR
+   code).
+2. Guests enter the code; everyone calibrates and locks the board; the
+   match starts when all are locked (the AR pause / resume rules apply per
+   phone; a phone that loses tracking pauses its view, not the match).
+3. Games get an `LGMatch`: `players`, `local_player`, `send(op, data)`,
+   `state_received` signal, `is_host()`; payloads are board-space and small
+   (ints, packed vectors).
+
+### 9.3 Relayed vs authoritative
+
+| Mode | Nakama feature | Use for | Notes |
+| --- | --- | --- | --- |
+| **Relayed** | Clients send match data; the server forwards it (no game code on the server) | Turn-based and casual co-op: Tic-Tac-Toe on one board, Stack Tower turns, Tattoo Studio "draw together" (strokes are board-space rays) | Quick to build; a host phone acts as the referee; cheating is possible, so no ranked results |
+| **Authoritative** | A match handler on the server (`match_init`, `match_join_attempt`, `match_join`, `match_loop` at a fixed tick, `match_leave`, `match_terminate`) owns the state | Anything competitive or with shared simulation: Crystal Defense co-op (towers, waves, shared mana), Mage Run races, ranked results feeding leaderboards | Server code per game mode (TypeScript first); deterministic, node-free sims (Mage Run's `MageRunSim`, Crystal Defense's `platform/sim` pieces) can be shared by porting the rules or by running the same seeded rules on both sides with the server as referee; start at 10-20 Hz |
+
+Plan: relayed Tic-Tac-Toe on one board first (proves the board-pose
+agreement and the session flow), then an authoritative Crystal Defense
+co-op prototype.
 
 ---
 
-## 10. Open questions
+## 10. Store and Play Billing (designed now, purchases later)
 
-1. **Audience:** is Looking Glass aimed at (or likely to have) children
-   under 13? This decides Kids mode, COPPA and the Families policy, and
-   whether global leaderboards and free-text names exist at all.
-2. **Shared currency:** earn-only, or also bought with real money? Buying
-   adds Google Play Billing (fees, refunds, receipts), stricter rules for
-   minors and an economy design pass.
-3. **iOS:** is an iPhone build planned? It adds Sign in with Apple and an
-   ARKit bridge, and affects the choice of sign-in providers now.
-4. **Multiplayer timing:** if shared-anchor multiplayer (two phones, one
-   board) is within about a year, should P2 start on Nakama instead of
-   Supabase to avoid running two backends?
-5. **Tattoo ink in the cloud:** ink atlases are megabytes per model. Keep
-   them local-only, or offer opt-in cloud backup (storage cost and upload
-   size)?
+### 10.1 Shared currency
+
+- **Earn-only at first (D2).** A platform currency (working name
+  "Glimmer") in a **Nakama wallet** per account. Only the server changes
+  it: `lg_wallet_earn(game_id, reason, evidence)` applies server-side rules
+  (daily caps per game, first-win bonuses, verified leaderboard results),
+  writes a ledger entry, and returns the new balance. A game cannot mint
+  currency by editing a save.
+- Offline: earn requests queue in the outbox and the hub shows them as
+  "pending" until the server confirms. Spending needs to be online.
+- Spend on cosmetics first (wizard hats and robes, board skins, Tattoo
+  Studio ink packs, Stack Tower slab themes), each a platform item id
+  granted on the server and readable by games through `LGWallet.owns(item)`.
+
+### 10.2 Store UI (hub **Store** tab)
+
+| Section | Content | Now |
+| --- | --- | --- |
+| Header | Balance chip (Glimmer icon and number), "pending" badge when offline earnings wait | Live |
+| **Earn** | Today's ways to earn: per-game goals, daily first win, streaks, with progress bars | Live |
+| **Spend** | Cosmetic items per game and platform-wide, preview on the board (place a hat on the wizard in the hub preview) | Live with earn-only currency |
+| **Get Glimmer** (purchase packs) | 3-4 pack tiles laid out as they will ship, with no price shown; a diagonal **"Coming soon"** ribbon and a dimmed, disabled button; tapping shows "Purchases are coming soon. Earn Glimmer by playing for now." | **Blocked** (D2) |
+| Purchase history | Empty state "No purchases yet" | Placeholder |
+
+Portrait: sections stacked in one scroll, packs in a 2-column grid.
+Landscape: Earn and Spend side by side, packs in one row. The same
+layout tests as the hub (inside the screen, no overlaps, both shapes).
+
+### 10.3 Play Billing integration (later)
+
+- **Client:** the Godot Google Play Billing plugin (Play Billing Library)
+  behind an `LGStore` platform class; games never touch it. One-time
+  consumable products (`glimmer_pack_small` …) defined in Play Console.
+- **Flow:** query products (show localized prices from Play), launch the
+  purchase flow, receive the purchase token, send it to the server
+  (`lg_purchase_validate`), which validates it with Google (Nakama's
+  Google purchase validation, using a Play Developer API service account),
+  grants the currency in the same transaction with the order id as the
+  idempotency key, then the client **consumes** the purchase. Unconsumed
+  purchases are retried at the next launch, so a crash never loses a paid
+  pack.
+- **Refunds and chargebacks:** Play Real-time Developer Notifications (or
+  the Voided Purchases API polled daily) mark the order voided; the server
+  writes a negative ledger entry (balance may go negative, which blocks
+  spending until earned back).
+- **Rules:** Google Play's payments policy (digital goods must use Play
+  Billing), a clear price and content on each pack, no loot boxes (fixed
+  contents only), purchase history and receipts in the hub, and the 13+
+  audience (D1). Taxes and payouts are handled by Google; a merchant
+  account in Play Console is needed first.
+- **Turn-on checklist:** merchant account, products in Play Console,
+  service account, the RPC and refund job deployed, then remove the
+  "Coming soon" block behind a remote config flag.
+
+---
+
+## 11. Milestones
+
+| Phase | Scope | Done when |
+| --- | --- | --- |
+| **P1: local profile, save API, hub** | `LGProfile` (guest, up to 4 local), `LGSave` (slots, envelope, migrations, autosave hooks, atomic writes, blobs), `LGScores` local (manifest leaderboards, local top 20, stats), hub (Play / Profile / Store shell / Settings, game sheet, progress summaries) in both orientations; migrate Stack Tower, Mage Run, Tic-Tac-Toe, Tattoo Studio (settings; ink as local blobs) and placement files; Crystal Defense adopts `main` and `run` slots; data export and per-game reset; `save_tests` and hub layout tests | Bests, progress and Tattoo ink survive an app restart; a corrupted or half-written save falls back cleanly; the hub passes the orientation layout checks; everything works in airplane mode |
+| **P2: accounts and cloud saves (Nakama)** | Self-hosted Nakama (Docker Compose, VPS), `LGBackend` with `NakamaBackend` and `FakeBackend`; device-auth guest accounts, Google and email linking; storage-object sync of `main` slots with versions, merge hooks and conflict backups; 13+ age gate and terms; name filter hook; in-app and web account deletion; privacy policy and Data safety | Progress moves to a second phone by signing in; conflicts resolve as specified; deleting an account removes all server data |
+| **P3: online leaderboards** | Authoritative Nakama leaderboards from the manifests, `lg_submit_score` validation, outbox, global and weekly boards, verified flags, reports; optional replay verification for Mage Run | Global boards show verified scores; forged submissions are rejected in tests |
+| **P4: shared-board multiplayer** | Join codes, board-pose agreement by fitting the same table, `LGMatch`; relayed Tic-Tac-Toe on one board; then an authoritative Crystal Defense co-op prototype | Two phones play one board in the same room; a phone losing tracking rejoins without ending the match |
+| **P5: friends and shared currency (earn-only)** | Friends (codes and the match history), friends' boards; Nakama wallet with server earn rules, cosmetics to spend on; Store tab live with the purchase section behind "Coming soon" | Balances cannot be changed by editing a save; the store passes the layout checks |
+| **P6: purchases** | Play Billing via `LGStore`, server validation, consume, refunds, remote flag to lift "Coming soon" | A test purchase grants currency exactly once, survives a crash, and a refund claws it back |
+| **P7: creator tools alpha** | `.lgpkg` for first-party games, sandbox scripting prototype, Studio alpha, automated review checks | A non-bundled game installs from a package and passes the platform tests |
+
+Each phase ships with headless tests like today's suites, and the APK keeps
+working fully offline (multiplayer and purchases excepted).
+
+---
+
+## 12. Open questions
+
+The first round is answered (Decisions D1-D5 at the top). Remaining:
+
+1. **Co-located or remote multiplayer?** Same room only (one physical board)
+   at first, or also remote players seeing a copy of the board on their own
+   table? Remote play changes nothing in Nakama but needs latency handling
+   and a different social flow.
+2. **Hosting region:** where most players are (EU or US) decides the VPS
+   location for multiplayer latency and the GDPR posture.
+3. **Currency name and earn rates:** "Glimmer" is a placeholder; the earn
+   caps per game need a short economy pass before P5.
