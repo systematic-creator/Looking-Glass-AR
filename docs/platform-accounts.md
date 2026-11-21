@@ -3,6 +3,8 @@
 Status: **design (doc only, no code yet).** Branch `platform-accounts`,
 from `main` @ 10511db.
 
+All open questions are answered (D1-D8 below).
+
 Direction agreed with the owner, modelled on how Roblox splits things:
 
 1. **An online account backend**: profiles, cloud saves per game, per-game
@@ -23,6 +25,9 @@ Direction agreed with the owner, modelled on how Roblox splits things:
 | D3 | iOS | **Out of scope** for now (no Apple device for signing / ARKit). Android only; no Sign in with Apple. |
 | D4 | Multiplayer | **Shared-board multiplayer is likely within about a year.** The backend recommendation is therefore **Nakama**, behind the `LGBackend` interface, with Supabase as the alternative (section 6; multiplayer in section 9). |
 | D5 | Tattoo ink | **Phone only** for now (local blobs, never synced). |
+| D6 | Multiplayer modes | **Same-room and remote, per game.** Each manifest declares the modes it supports; remote play shows the other players on a **mirrored board on each player's own table**, with avatars and ghost hands (section 9.4). |
+| D7 | Hosting region | **US.** One Nakama server in a central US region (section 6). GDPR basics only matter once EU players join (section 7). |
+| D8 | Currency name | **Shards.** Starter earn rates per game and a daily cap in section 10.1. Crystal Defense's in-run **mana** stays a separate, per-run game resource. |
 
 This doc fixes the shapes that games code against first (`LGProfile`,
 `LGSave`, `LGScores`), so that the games, including **Crystal Defense**
@@ -56,7 +61,7 @@ Looking Glass app (one Godot app, one AR session)
 ├── LGSave       per-profile, per-game, namespaced slots on user://
 ├── LGScores     per-game leaderboards and stats (local first)
 ├── LGWallet     shared currency (server-authoritative, P5)
-├── LGMatch      shared-board multiplayer session (section 9)
+├── LGMatch      multiplayer session, same room or remote (section 9)
 └── LGBackend    one interface; adapters: Offline (P1), Nakama (P2+),
         │        Supabase as the alternative
         └── Sync engine: outbox, revisions, conflict resolution
@@ -557,7 +562,7 @@ APK can be extracted). So:
 
 | Option | What it is | Fit for Looking Glass | Cost notes (checked Nov 2026; verify before buying) |
 | --- | --- | --- | --- |
-| **Nakama** (Heroic Labs, Apache 2.0) | Game server: accounts (device, Google, email, custom) with linking, storage objects with versions and permissions, leaderboards and tournaments, friends and groups, wallets with a ledger, in-app purchase validation, matchmaker, **relayed and authoritative realtime matches**, server code in Go, TypeScript or Lua. Official Godot 4 client in GDScript. | The only option that covers every phase including **shared-board multiplayer (D4)** in one service. Costs: a server and database to run, and server code in a second language. | Self-host: Docker image plus Postgres on a small VPS, roughly **$10-30/month**. Heroic Cloud (managed): priced per Nakama CPU and database CPU through a calculator, no public list price, aimed at studios; support plans from $2,000. |
+| **Nakama** (Heroic Labs, Apache 2.0) | Game server: accounts (device, Google, email, custom) with linking, storage objects with versions and permissions, leaderboards and tournaments, friends and groups, wallets with a ledger, in-app purchase validation, matchmaker, **relayed and authoritative realtime matches**, server code in Go, TypeScript or Lua. Official Godot 4 client in GDScript. | The only option that covers every phase including **shared-board multiplayer (D4)** in one service. Costs: a server and database to run, and server code in a second language. | Self-host: Docker image plus Postgres on a small US VPS, roughly **$20-35/month**. Heroic Cloud (managed): priced per Nakama CPU and database CPU through a calculator, no public list price, aimed at studios; support plans from $2,000. |
 | **Supabase** (alternative) | Hosted Postgres + Auth (anonymous, Google ID token, email OTP) + row-level security + Edge Functions + storage. Open source, self-hostable. | Excellent for accounts, saves and SQL leaderboards with no server to run. No game realtime: multiplayer would need a second service. | Free: 50k MAU, 500 MB DB, paused after 1 week idle. Pro from **$25/month**. |
 | **Firebase** | Firestore, Firebase Auth, Cloud Functions. | Good Google sign-in; leaderboard queries awkward in a document store; read-metered costs; no game realtime. Community Godot addon. | Spark free: 1 GiB, 50k reads / 20k writes per day. Blaze pay as you go, no hard spending cap. |
 | **PlayFab** | Managed game backend. | No official Godot SDK (REST only); free Development Mode caps at 1,000 lifetime players per title; Foundation Mode only for Xbox Store games. | Pay-as-you-go meters, Standard $99/month. |
@@ -583,10 +588,15 @@ A `FakeBackend` (like `FakeARBridge`) drives the headless tests.
 
 1. **Development:** Nakama + Postgres with Docker Compose on the box or a
    laptop (API on port 7350, console on 7351). Free.
-2. **Test and launch: self-host on one VPS.** 2 vCPU / 4 GB RAM (for
-   example Hetzner, DigitalOcean or a GCP e2-medium), Docker Compose with
+2. **Test and launch: self-host on one VPS in a central US region (D7).**
+   **Chicago or Dallas** (for example Vultr, Akamai / Linode) or **GCP
+   `us-central1` (Iowa)**: a central location keeps round trips to both
+   coasts around 30-50 ms, which suits remote matches. 2 vCPU / 4 GB RAM
+   (about $20-30/month at those providers; an East-coast-only box such as
+   Hetzner Ashburn is cheaper but adds latency for the West coast). Docker
+   Compose with
    Nakama, Postgres and Caddy for TLS, nightly `pg_dump` to object storage,
-   uptime monitoring. About **$10-30/month** plus a few hours a month of
+   uptime monitoring. About **$20-35/month** with backups, plus a few hours a month of
    upkeep (OS and Nakama updates). Open-source Nakama runs as a **single
    node** (clustering is an Enterprise feature); one node handles thousands
    of concurrent players for this kind of game. Change the default server
@@ -645,12 +655,17 @@ version check, SQL ranks, an Edge Function per RPC).
 - **Age (D1): 13+ only.** No under-13 audience, so no Kids mode and COPPA is
   out of scope. A neutral age gate (birth year, no default) and a terms
   note before sign-in or any online feature. Under 13: online features stay
-  off. The store listing's target audience is 13+. In the EU the age of
-  digital consent is 13-16 depending on the country (GDPR Art. 8); since
-  the app needs no consent-based processing for its core features (saves
-  and scores are contract necessity, there are no ads or analytics), the
-  gate plus terms is enough at this stage. Revisit if ads, analytics or
-  chat are added.
+  off. The store listing's target audience is 13+.
+- **Region (D7): US first.** Data is stored on the US server; the privacy
+  policy follows US norms (CCPA-style access and deletion, both already
+  covered above). **Only if EU players join** (the store listing is opened
+  to EU countries): add the GDPR basics: a lawful basis per data use (saves
+  and scores as contract necessity; no ads or analytics, so no consent
+  banners), the age of digital consent (13-16 by country, GDPR Art. 8,
+  which may need parental consent for younger EU teens or a higher gate
+  there), a note on transfers to the US (standard contractual clauses with
+  the host), and a contact for data requests. Until then, limit the Play
+  listing to the countries the policy covers.
 - **Display names and leaderboards.** Global leaderboards and free-text
   display names are allowed. Names: 3-16 characters, letters, digits,
   spaces and `_-`; a server-side filter (word list with leetspeak
@@ -716,10 +731,31 @@ audience.
 
 ---
 
-## 9. Shared-board multiplayer (brief)
+## 9. Multiplayer: same room and remote
 
-Goal (D4, within about a year): two or more phones in the same room play
-on **one shared board**, each seeing it from their own side.
+Goal (D4, within about a year): two or more players on one game, either
+**in the same room on one shared board** or **remote, each on their own
+table** (D6), depending on what the game supports.
+
+**Manifest (D6).** Each game declares its modes; the hub's game sheet shows
+**Play together** (same room) and / or **Play online** (remote) from them:
+
+```gdscript
+# LGGameManifest (new optional fields)
+@export var multiplayer_modes: PackedStringArray = []   # "same_room", "remote"
+@export var multiplayer_kind: StringName = &""          # &"relayed" or &"authoritative" (9.3)
+@export var remote_view: StringName = &"mirror"         # how remote players appear (9.4)
+@export_range(2, 8) var max_online_players: int = 2
+```
+
+| Game | Same room | Remote | Kind | Notes |
+| --- | --- | --- | --- | --- |
+| Tic-Tac-Toe | Yes | Yes | Relayed | Turn-based; the obvious first test |
+| Stack Tower | Yes (take turns on one tower) | Yes (race: each builds a tower, the rival's appears as a ghost tower) | Relayed first, authoritative for ranked | |
+| Mage Run | No (one road is too small for two runners on a table) | Yes (race on the same seed; the rival is a ghost wizard on your road) | Authoritative (ranked) | |
+| Crystal Defense | Yes (co-op on one map) | Yes (co-op on mirrored maps) | Authoritative | Shared waves and towers; in-run mana per team |
+| Tattoo Studio | Yes (draw together on one model) | Yes (mirrored model, ghost needles) | Relayed | No scores; ink still stays on each phone (D5) |
+| Competitive Evolution | Later | Later | Authoritative | Placeholder today |
 
 ### 9.1 One board for every phone
 
@@ -740,13 +776,16 @@ add Cloud Anchors as an option later.
 
 ### 9.2 Session flow
 
-1. Host picks a game and **Play together**; the platform creates a Nakama
+1. Same room (**Play together**): the host picks a game; the platform creates a Nakama
    match (`lg_match_create`) and shows a 6-character join code (and a QR
    code).
-2. Guests enter the code; everyone calibrates and locks the board; the
+2. Guests enter the code; everyone calibrates and locks the same table; the
    match starts when all are locked (the AR pause / resume rules apply per
    phone; a phone that loses tracking pauses its view, not the match).
-3. Games get an `LGMatch`: `players`, `local_player`, `send(op, data)`,
+3. Remote (**Play online**): the same join code, or Nakama's matchmaker
+   for public games later; each player calibrates their own table; the
+   match starts when all boards are locked.
+4. Games get an `LGMatch`: `players`, `local_player`, `send(op, data)`,
    `state_received` signal, `is_host()`; payloads are board-space and small
    (ints, packed vectors).
 
@@ -758,8 +797,50 @@ add Cloud Anchors as an option later.
 | **Authoritative** | A match handler on the server (`match_init`, `match_join_attempt`, `match_join`, `match_loop` at a fixed tick, `match_leave`, `match_terminate`) owns the state | Anything competitive or with shared simulation: Crystal Defense co-op (towers, waves, shared mana), Mage Run races, ranked results feeding leaderboards | Server code per game mode (TypeScript first); deterministic, node-free sims (Mage Run's `MageRunSim`, Crystal Defense's `platform/sim` pieces) can be shared by porting the rules or by running the same seeded rules on both sides with the server as referee; start at 10-20 Hz |
 
 Plan: relayed Tic-Tac-Toe on one board first (proves the board-pose
-agreement and the session flow), then an authoritative Crystal Defense
-co-op prototype.
+agreement and the session flow), then remote Tic-Tac-Toe with the mirrored
+board (9.4), then an authoritative Crystal Defense co-op prototype in both
+modes.
+
+### 9.4 Remote play: a mirrored board on every table
+
+In remote play there is no shared physical board. Each player places the
+game's board on **their own table** as usual (normal calibration, their own
+placement scale), and the match state, which is already in **board space**,
+is drawn on every board. So each player sees the **same board**,
+mirrored onto their table, with the others shown as presences around it:
+
+- **Seats.** Each player gets a side of the board (2 players: opposite
+  sides; up to 4: one per side). Each phone rotates the board so its own
+  seat is nearest to it (`remote_view = &"mirror"`, the default). Games
+  where sides matter (Tic-Tac-Toe marks, Crystal Defense lanes) convert
+  seat-relative positions; board space stays the source of truth.
+- **Avatars.** Each remote player is a small floating **avatar marker** at
+  their seat: their profile colour and glyph and display name, placed where
+  their phone is relative to their own board (their camera pose in board
+  space, sent at about 10 Hz, scaled to the local board), so you see where
+  they are looking from. It fades when they look away or lose tracking.
+- **Ghost hands.** Each remote player's **touch ray** on their board
+  (already board-space: `_on_box_ray`, ray strokes) shows as a translucent
+  **ghost hand / pointer** where it hits, with a short trail: you see them
+  aim at a cell, trace a tattoo line, or point at the tower they will
+  build. Picked-up or selected pieces glow in that player's colour.
+- **Ghost content per game.** Racing games show the rival as a ghost on
+  your own track (Mage Run's ghost wizard, Stack Tower's ghost tower beside
+  yours) rather than a shared board, chosen by `remote_view = &"ghost"`.
+- **Latency.** Authoritative games get the server's state at 10-20 Hz; each
+  phone predicts its own inputs, interpolates remote avatars, hands and
+  pieces about 100 ms behind, and snaps to the server state on mismatch.
+  Turn-based relayed games just apply moves in order. A "waiting for
+  {name}" badge shows when a remote player is paused (rotation, app
+  background or lost tracking); the match keeps going for real-time games
+  and waits for turn-based ones.
+- **Social.** Quick reactions (a few emotes on the ghost hand) and no free
+  text chat (section 7); voice is out of scope.
+- **Same room vs remote in code.** Games see the same `LGMatch`; same-room
+  play just has every seat on one shared board (9.1), remote play adds the
+  mirror and presences. `LGMatch.presences()` gives each remote player's
+  seat, pose and ray for the platform's avatar and ghost-hand rendering, so
+  games do not draw them themselves.
 
 ---
 
@@ -767,12 +848,42 @@ co-op prototype.
 
 ### 10.1 Shared currency
 
-- **Earn-only at first (D2).** A platform currency (working name
-  "Glimmer") in a **Nakama wallet** per account. Only the server changes
+- **Earn-only at first (D2).** A platform currency, **Shards**
+  (D8), in a **Nakama wallet** per account. Only the server changes
   it: `lg_wallet_earn(game_id, reason, evidence)` applies server-side rules
   (daily caps per game, first-win bonuses, verified leaderboard results),
   writes a ledger entry, and returns the new balance. A game cannot mint
   currency by editing a save.
+- **Starter earn rates (D8, server rules, tune in playtests).** Earnings
+  need a completed session and evidence the server already checks
+  (section 5.4); repeats beyond a cap earn nothing that day.
+
+  | Game | Earns | Per-game daily cap |
+  | --- | --- | --- |
+  | Tic-Tac-Toe | 5 per finished game (local two-player counts once per round, not per mark) | 30 |
+  | Stack Tower | 1 per 5 layers; +10 for a new personal best | 60 |
+  | Mage Run | 1 per 100 m; +10 for a new personal best | 80 |
+  | Crystal Defense | 10 per level won; +5 per star the first time it is earned | 100 |
+  | Tattoo Studio | 5 per session with at least 5 minutes of drawing | 20 |
+  | Competitive Evolution | none (placeholder) | 0 |
+  | Any multiplayer match | +10 per finished match (on top of the game's own rate) | 50 |
+
+  - **Daily cap: 250 Shards per account** across all games (resets at
+    midnight US Central time), so a long session in one game cannot farm
+    the economy. **Daily first win** in any game: +20 (inside the cap).
+  - **One-time:** +25 the first time each game is played, +50 for linking
+    an account (outside the cap).
+  - **Reference prices:** small cosmetics 150-300, large ones (board skins,
+    full outfits) 600-1,200, so a regular player earns a small item in one
+    or two days and a large one in about a week.
+- **Not the same as Crystal Defense's mana (D8).** Crystal Defense's
+  in-run **mana** is the game's own `Wallet`: earned and spent inside a run,
+  reset every level, never saved to the account and never exchanged for
+  Shards. To avoid confusion with the crystal theme, Shards are only shown
+  in platform UI (hub, Store, the result screen's "+20 Shards" line with the
+  Shards icon), never in Crystal Defense's in-run HUD, and the two never
+  share an icon or colour (mana: Crystal Defense's own crystal colour;
+  Shards: the platform's shard icon in a distinct colour).
 - Offline: earn requests queue in the outbox and the hub shows them as
   "pending" until the server confirms. Spending needs to be online.
 - Spend on cosmetics first (wizard hats and robes, board skins, Tattoo
@@ -783,10 +894,10 @@ co-op prototype.
 
 | Section | Content | Now |
 | --- | --- | --- |
-| Header | Balance chip (Glimmer icon and number), "pending" badge when offline earnings wait | Live |
+| Header | Balance chip (Shards icon and number), "pending" badge when offline earnings wait | Live |
 | **Earn** | Today's ways to earn: per-game goals, daily first win, streaks, with progress bars | Live |
 | **Spend** | Cosmetic items per game and platform-wide, preview on the board (place a hat on the wizard in the hub preview) | Live with earn-only currency |
-| **Get Glimmer** (purchase packs) | 3-4 pack tiles laid out as they will ship, with no price shown; a diagonal **"Coming soon"** ribbon and a dimmed, disabled button; tapping shows "Purchases are coming soon. Earn Glimmer by playing for now." | **Blocked** (D2) |
+| **Get Shards** (purchase packs) | 3-4 pack tiles laid out as they will ship, with no price shown; a diagonal **"Coming soon"** ribbon and a dimmed, disabled button; tapping shows "Purchases are coming soon. Earn Shards by playing for now." | **Blocked** (D2) |
 | Purchase history | Empty state "No purchases yet" | Placeholder |
 
 Portrait: sections stacked in one scroll, packs in a 2-column grid.
@@ -828,8 +939,8 @@ layout tests as the hub (inside the screen, no overlaps, both shapes).
 | **P1: local profile, save API, hub** | `LGProfile` (guest, up to 4 local), `LGSave` (slots, envelope, migrations, autosave hooks, atomic writes, blobs), `LGScores` local (manifest leaderboards, local top 20, stats), hub (Play / Profile / Store shell / Settings, game sheet, progress summaries) in both orientations; migrate Stack Tower, Mage Run, Tic-Tac-Toe, Tattoo Studio (settings; ink as local blobs) and placement files; Crystal Defense adopts `main` and `run` slots; data export and per-game reset; `save_tests` and hub layout tests | Bests, progress and Tattoo ink survive an app restart; a corrupted or half-written save falls back cleanly; the hub passes the orientation layout checks; everything works in airplane mode |
 | **P2: accounts and cloud saves (Nakama)** | Self-hosted Nakama (Docker Compose, VPS), `LGBackend` with `NakamaBackend` and `FakeBackend`; device-auth guest accounts, Google and email linking; storage-object sync of `main` slots with versions, merge hooks and conflict backups; 13+ age gate and terms; name filter hook; in-app and web account deletion; privacy policy and Data safety | Progress moves to a second phone by signing in; conflicts resolve as specified; deleting an account removes all server data |
 | **P3: online leaderboards** | Authoritative Nakama leaderboards from the manifests, `lg_submit_score` validation, outbox, global and weekly boards, verified flags, reports; optional replay verification for Mage Run | Global boards show verified scores; forged submissions are rejected in tests |
-| **P4: shared-board multiplayer** | Join codes, board-pose agreement by fitting the same table, `LGMatch`; relayed Tic-Tac-Toe on one board; then an authoritative Crystal Defense co-op prototype | Two phones play one board in the same room; a phone losing tracking rejoins without ending the match |
-| **P5: friends and shared currency (earn-only)** | Friends (codes and the match history), friends' boards; Nakama wallet with server earn rules, cosmetics to spend on; Store tab live with the purchase section behind "Coming soon" | Balances cannot be changed by editing a save; the store passes the layout checks |
+| **P4: multiplayer (same room and remote)** | Manifest `multiplayer_modes`, join codes, board-pose agreement by fitting the same table, `LGMatch` with presences; relayed Tic-Tac-Toe same room, then remote on mirrored boards with avatars and ghost hands; then an authoritative Crystal Defense co-op prototype in both modes | Two phones play one board in the same room, and two phones in different places see each other's moves, avatars and ghost hands on their own tables; a phone losing tracking rejoins without ending the match |
+| **P5: friends and Shards (earn-only)** | Friends (codes and the match history), friends' boards; Nakama wallet with the Shards earn rules and daily cap (10.1), cosmetics to spend on; Store tab live with the purchase section behind "Coming soon" | Balances cannot be changed by editing a save; the store passes the layout checks |
 | **P6: purchases** | Play Billing via `LGStore`, server validation, consume, refunds, remote flag to lift "Coming soon" | A test purchase grants currency exactly once, survives a crash, and a refund claws it back |
 | **P7: creator tools alpha** | `.lgpkg` for first-party games, sandbox scripting prototype, Studio alpha, automated review checks | A non-bundled game installs from a package and passes the platform tests |
 
@@ -840,13 +951,6 @@ working fully offline (multiplayer and purchases excepted).
 
 ## 12. Open questions
 
-The first round is answered (Decisions D1-D5 at the top). Remaining:
-
-1. **Co-located or remote multiplayer?** Same room only (one physical board)
-   at first, or also remote players seeing a copy of the board on their own
-   table? Remote play changes nothing in Nakama but needs latency handling
-   and a different social flow.
-2. **Hosting region:** where most players are (EU or US) decides the VPS
-   location for multiplayer latency and the GDPR posture.
-3. **Currency name and earn rates:** "Glimmer" is a placeholder; the earn
-   caps per game need a short economy pass before P5.
+None blocking. All design questions are answered (D1-D8). The Shards earn
+rates and caps in section 10.1 are starting values to tune in playtests,
+not open questions.
