@@ -850,6 +850,9 @@ func _refresh_hud() -> void:
 		info += "   Perfect ×%d" % streak
 	_info_label.text = info
 	_over_panel.visible = state == State.OVER
+	# Hidden while the AR board is being placed: the calibration banner
+	# owns the top of the screen then.
+	_score_box.visible = is_playing() or state == State.OVER
 	_over_label.text = "Height %d   Score %d\nBest %d   Perfects %d (best streak %d)" % [height(), score, session_best, perfects, best_streak]
 	if state == State.OVER:
 		set_status("The tower is done. Tap Restart.")

@@ -71,6 +71,8 @@ var airspace_value_label: Label
 var airspace_adjustable: bool = false
 ## Debug line shown because the player toggled it (5 taps on the panel).
 var debug_requested: bool = false
+## True once the board is locked: the banner sits above the button row.
+var banner_at_bottom: bool = false
 
 var _sweep_phone: Panel
 var _sweep_time: float = 0.0
@@ -326,7 +328,7 @@ func _process(delta: float) -> void:
 	_clock += delta
 	if debug_label.visible:
 		# Just under the step panel when it is shown, else under "‹ Games".
-		var top: float = _banner.get_global_rect().end.y + 10.0 if _banner.visible else 160.0
+		var top: float = _banner.get_global_rect().end.y + 10.0 if _banner.visible and not banner_at_bottom else 160.0
 		debug_label.offset_top = maxf(top, 160.0)
 		debug_label.offset_bottom = debug_label.offset_top + 130.0
 	if sweep_hint == null or not sweep_hint.visible:
@@ -400,8 +402,26 @@ func apply_flow(flow: CalibrationFlow) -> void:
 	title_label.visible = not title_label.text.is_empty()
 	status_label.text = flow.message()
 	_banner.visible = flow.is_calibrating()
+	set_banner_at_bottom(not flow.is_calibrating())
+	if not flow.is_calibrating() and not debug_requested:
+		# A forced (not asked-for) debug line goes with the calibration.
+		debug_label.visible = false
 	var info: Dictionary = flow.last_info
 	stats_label.text = "Feature points: %d   ·   Surfaces: %d" % [int(info.get("points", 0)), int(info.get("upward_planes", 0))]
+
+
+## Once the board is locked the game owns the top of the screen (scores,
+## panels), so a platform message (tracking lost, low light, re-finding the
+## table) shows just above the bottom button row instead; GameHost counts
+## it in the game's ui_bottom_inset() so the game's controls move up clear
+## of it. While calibrating the banner is the step panel at the top.
+func set_banner_at_bottom(bottom: bool) -> void:
+	if _banner == null or _row == null:
+		return
+	banner_at_bottom = bottom
+	var column: Node = _banner.get_parent()
+	# Column: [banner, spacer, row] at the top, [spacer, banner, row] at the bottom.
+	column.move_child(_banner, column.get_child_count() - 2 if bottom else 0)
 
 
 ## Temporary status line (e.g. tracking lost while playing).

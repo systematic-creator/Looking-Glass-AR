@@ -85,6 +85,8 @@ const MAX_TAP_SLOP_PX: float = 120.0
 const DEBUG_LONG_PRESS_SECONDS: float = 1.5
 ## How fast the touch camera follows a game's focus height (1/s).
 const VIEW_FOCUS_EASE: float = 4.0
+## Portrait status line starts right of "‹ Games" and the dbg button.
+const STATUS_LEFT_PORTRAIT: float = 252.0
 var _status_press_time: float = -1.0
 ## Glow clipping state: the play-area version / anchor pose last applied.
 var _clip_version: int = -1
@@ -485,6 +487,10 @@ func _update_ui_insets() -> void:
 			var rect: Rect2 = button.get_global_rect()
 			if rect.get_center().y > view_h * 0.5:
 				inset = maxf(inset, view_h - rect.position.y)
+		# A platform message shown above the row while playing.
+		var hud: CalibrationHud = session.hud
+		if hud.banner_at_bottom and hud._banner.is_visible_in_tree():
+			inset = maxf(inset, view_h - hud._banner.get_global_rect().position.y)
 	game.lg_set_ui_bottom_inset(inset)
 
 
@@ -666,7 +672,7 @@ func _apply_hud_layout() -> void:
 	if portrait:
 		_status_label.anchor_left = 0.0
 		_status_label.anchor_right = 1.0
-		_status_label.offset_left = 180.0
+		_status_label.offset_left = STATUS_LEFT_PORTRAIT
 		_status_label.offset_right = -24.0
 	else:
 		_status_label.anchor_left = 1.0
@@ -730,7 +736,9 @@ func _build_hud() -> void:
 	debug_button.focus_mode = Control.FOCUS_NONE
 	debug_button.add_theme_font_size_override("font_size", 16)
 	debug_button.modulate = Color(1, 1, 1, 0.45)
-	debug_button.position = Vector2(20.0, 96.0)
+	# Beside "‹ Games" (not under it): the band under the back button is
+	# where games put their top HUD.
+	debug_button.position = Vector2(172.0, 28.0)
 	debug_button.custom_minimum_size = Vector2(64.0, 48.0)
 	debug_button.visible = false
 	debug_button.pressed.connect(toggle_debug)

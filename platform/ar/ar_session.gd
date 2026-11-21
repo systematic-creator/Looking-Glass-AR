@@ -872,7 +872,9 @@ func _process(delta: float) -> void:
 		_diag_elapsed = 0.0
 		tracking_info = bridge.diagnostics()
 		if hud != null:
-			var forced: bool = bool(tracking_info.get("debuggable", false)) or flow.offers_fallback() or front_follow
+			# Forced only while calibrating: once the board is locked the
+			# screen is the game's, and the line shows only if asked for.
+			var forced: bool = not placement.locked and (bool(tracking_info.get("debuggable", false)) or flow.offers_fallback() or front_follow)
 			var line: String = CalibrationFlow.debug_line(tracking_info) + debug_suffix()
 			hud.set_debug_text(line, forced)
 	if phase != Phase.PLACED:
