@@ -11,23 +11,28 @@ goal: players in the same room share one anchored board, and each sees it
 from their own phone's position.
 
 **Status:** early. The platform layer (ARCore, calibration, anchoring), the
-game contract, the launcher, and four games are in place. *Tic-Tac-Toe* is a
+game contract, the launcher, and five games are in place. *Tic-Tac-Toe* is a
 sample that proves the contract. *Tattoo Studio* tattoos a life-size or
 miniature 3D model and is the test bed for 3D models
 ([games/tattoo_studio](games/tattoo_studio/README.md)). *Stack Tower* is a
-one-player timing game in a tall simulation box. *Competitive Evolution* is a placeholder
+one-player timing game in a tall simulation box. *Mage Run* is a three-lane
+endless runner on a storybook diorama with two hologram "arcane rows" above
+the road (first playable, silent). *Competitive Evolution* is a placeholder
 board; the full game lives in
 [Competitive-evolution-AGR](https://github.com/Systematic-creator/Competitive-evolution-AGR)
 and is on hiatus until it gets imported here.
 
-Godot **4.4.1**, typed GDScript, Compatibility renderer, landscape, Android +
+Godot **4.4.1**, typed GDScript, Compatibility renderer, portrait or
+landscape (each game's manifest picks; the default follows the phone), Android +
 ARCore. Desktop and headless runs use a touch / orbit camera instead of AR.
 
 ## Architecture
 
 ```
 platform/
-  looking_glass.gd        autoload: game catalog, launcher <-> game navigation
+  looking_glass.gd        autoload: game catalog, orientation, launcher <-> game navigation
+  display/lg_orientation.gd       orientation rules (manifest modes, base canvas sizes)
+  display/orientation_service.gd  applies / restores orientation, rotation + UI fade
   launcher/               catalog screen (main scene): one card per game
   host/game_host.gd       runs one game: board scene, AR session, input routing
   host/orbit_camera.gd    touch / desktop camera for the non-AR fallback
@@ -46,6 +51,8 @@ platform/
   ar/anchor_service.gd    the one world anchor (+ Cloud Anchor stub for multiplayer)
   ar/board_placement.gd   player's offset / rotation / size, saved per game
   ar/gesture_tracker.gd   tap / drag / pinch+twist from raw touches
+  ar/swipe_detector.gd    screen-space swipes for runners (+ swipe_buffer.gd)
+  ar/passthrough_background.gd  camera image for portrait / reverse landscape
   ar/surface_region.gd    play-area polygon: fit / clamp the board footprint
   visual/holo.gd          Holo: shared hologram materials, glow base, bars, ripples
   visual/holo_drop.gd     HoloDrop: drop-in animation (fall, squash, flash, ripple)
@@ -53,7 +60,9 @@ platform/
   visual/*.gdshader       the two hologram shaders (Compatibility-renderer safe)
 games/
   tic_tac_toe/            sample game (hologram board)
+  stack_tower/            timing game in a tall box
   competitive_evolution/  placeholder adapter
+  mage_run/               endless runner, first playable (design: docs/mage-run.md)
 addons/ARCorePlugin/      Android export plugin (binaries are built, not committed)
 tools/arcore_plugin/      ARCore plugin build script + patch
 tests/                    headless test suites
@@ -196,6 +205,14 @@ as is, so both are stretched the same way. The view and projection come from
 the same `ArSession_update` as the camera texture. `view_tests` checks that
 every table point renders on its video pixel from every viewpoint (and that
 the screen-aspect crop ARCore uses by default would be off by 100-270 px).
+That is the landscape path (Surface.ROTATION_90). **In portrait** (or
+reverse landscape) the feed shader cannot rotate the image, so the patched
+plugin tells ARCore the real rotation and window size, ARCore crops the
+rotated image to the screen, and the plugin reports the camera-texture UVs
+of the four screen corners each frame; `PassthroughBackground` draws the
+texture with those UVs as the environment's background canvas
+(`Environment.BG_CANVAS`), and the projection, view and hit tests use the
+same display geometry. `view_tests` models that path too.
 So content that still slides over the table while the board's pose reads
 constant comes from ARCore's world itself: camera pose error, or a plane
 height that is off. Both are worse in low light and on plain dark surfaces.
@@ -334,14 +351,41 @@ player's choice).
 | `_on_ray_stroke(phase, origin, direction)` | If `captures_ray_strokes()`: one finger's board-space ray on press (`StrokePhase.BEGIN`), every move (`MOVE`) and release (`END`); a second finger ends it with `CANCEL`. For painting / sculpting on 3D things; the touch camera does not orbit meanwhile. |
 | `_on_board_pinch(scale, twist)` | If `captures_pinch()`: two-finger scale factor and twist (radians, + = clockwise on screen) while playing; outside AR the camera then no longer zooms on pinch. |
 | `_on_box_changed(box: PlayBox)` | The player changed the airspace height (after `_on_board_ready`; also the `box_changed` signal). Re-fit anything tied to the top. |
+| `_on_swipe(direction: Vector2i, info)` | A screen-space swipe while playing, if `captures_swipes()` returns true (runners). `direction` is `Vector2i.LEFT` / `RIGHT` / `UP` / `DOWN` as the screen is held; `info` has velocity, time, from / to, distance, index (S-strokes). Taps still arrive as taps. |
+| `_on_orientation_changed(portrait: bool)` | The phone turned (after `_on_board_ready`; also the `orientation_changed` signal). Platform UI has already re-laid out; move what your anchors do not handle. A runner pauses itself here. |
 | `_on_exit()` | Player is leaving the game. Save here. |
+
+**Orientation:** `manifest.orientation` is `"either"` (default),
+`"landscape"` or `"portrait"`. GameHost applies it on load through the app's
+`OrientationService` (sensor based: both directions of the allowed shape
+still work) and restores `"either"` on exit; the launcher follows the phone.
+Android keeps the Activity on rotation (`configChanges` in the export
+template), so the AR session, the anchor and the board survive a turn
+untouched. On a rotation the base canvas swaps between 1280 x 720 and
+720 x 1280 (same physical UI size), the UI fades back in over 0.22 s, the
+host / AR HUDs re-lay out, the tap slop and swipe threshold are recomputed
+(same inches, new pixels), ARCore is told the display rotation, and then
+the game gets `_on_orientation_changed()`. An `"either"` game must lay its
+HUD out for both shapes (anchored Controls plus `is_portrait()`).
+
+**Launcher:** landscape shows every card in one row (cards narrow to 200
+px, grow taller, and narrow cards get a smaller name); portrait shows one
+wide list row per game (art on the left) and shortens the rows so the whole
+catalog fits. Descriptions shrink from 17 to 13 pt to fit their card and
+end in an ellipsis only past that (a 16:9 portrait screen trims the two
+longest).
+
+**Swipes:** return true from `captures_swipes()` to get `_on_swipe()` from a
+`SwipeDetector` (one finger, 0.28 in within 0.25 s, dominant axis 1.4x,
+fires on the threshold, S-strokes reverse). Those strokes never orbit the
+touch camera. `SwipeBuffer` gives the usual 0.15 s input buffer.
 
 **Touch-camera focus:** override `view_focus_height() -> float` (board space)
 to have the "Play without AR" camera ease its orbit centre to that height,
 e.g. the top of a growing tower (Stack Tower). The default (-1) keeps the
 fixed framing; AR ignores it.
 
-**Helpers:** `is_playing()`, `is_board_locked()`, `get_board_size()`,
+**Helpers:** `is_playing()`, `is_board_locked()`, `is_portrait()`, `get_board_size()`,
 `is_on_board(point)`, `set_status(text)` (shown by the platform while
 playing; hidden during AR calibration, prefixed "Paused" otherwise),
 `request_exit()` (back to the catalog), `request_box_height(h)`. A game may
@@ -415,6 +459,29 @@ hull: the back faces of a slightly larger box, gl_compatibility safe) so
 layers read separately. The sliding slab gets an emission lift and a bright
 outline, and solid debris shrinks away instead of fading. Game UI buttons
 are not board touches (`LGGame.is_over_game_ui(screen)`).
+
+**Mage Run** (`games/mage_run/`, `tall_box`, `orientation = "either"`, best
+upright) is a medieval endless runner on a 30 x 90 cm board with a 40 cm
+airspace (adjustable to 70 cm). A wizard in a blue robe and starry hat runs
+while the road scrolls under him. The road is cut off clean at both ends of
+the board: obstacles slice into view at the far cut and out at the near
+cut (shader cut planes), so nothing leaves the box. Obstacles come in four
+classes, read by shape: jump (fences, logs), duck (banner beams), either
+(striped barriers) and dodge (stone walls, crate stacks, rolling carts,
+royal carriages). Swipes
+(the platform's `captures_swipes()` / `_on_swipe`): left / right change lane,
+up jumps (and climbs onto an arcane row), down slides, drops a row or slams
+down mid-air; swipes are buffered 0.15 s and there is 0.08 s of coyote
+grace. Two translucent cyan hologram rows of 3 lanes each unlock at 150 m
+and 400 m, with ramps, jump-up tiles and (from 800 m) cracked tiles that
+crumble; their coins count x2 and x3. Speed rises from 1.2 to 2.6 run m/s.
+Chunks come from 24 hand-made templates; a seeded generator only uses a
+chunk if the validator finds a safe path into and through it. Coins fill the
+staff meter; a double tap or the staff button casts Shield, Magnet or
+Levitation in turn. Turning the phone (or Pause) pauses, and Resume counts
+down 3-2-1. Score = distance x multiplier (x1-x5 from coin streaks) + coins;
+the best of the session is kept. No audio yet. Design and status:
+[docs/mage-run.md](docs/mage-run.md).
 
 Competitive Evolution declares a tall box for its 42 cm globe (58 cm,
 50-60 cm) and keeps its label under the top.
@@ -525,7 +592,35 @@ drop-in, the tall box, ray-stroke / pinch hooks, touch strokes, rotate,
 scale and the box following, Focus, ink permanence across viewpoints, zoom,
 scale, model switches, pause / resume and relaunch, Clear all, multi-level
 undo (dirty-tile history, per model, Clear all undo, the Undo button), AR strokes on
-a table miniature).
+a table miniature),
+`orientation_tests` (manifest orientation and
+validation, apply on load / restore on exit, simulated rotations
+2340x1080 <-> 1080x2340: base canvas swap, one callback per turn, the UI
+fade, every HUD (host, AR calibration steps, debug line, Stack Tower,
+launcher) inside the
+screen without overlaps in both shapes, AR: ARCore
+told the rotation, the portrait passthrough background, the locked board
+and anchor unmoved, cell taps exact before / after the turn and after a
+180-degree flip, landscape-only plugin builds lock to landscape),
+`swipe_tests` (swipe thresholds in inches at several DPIs and in portrait,
+dominant axis, fire on threshold, slow strokes, S-strokes, taps, two
+fingers, the input buffer, routing through GameHost), `mage_run_tests`
+(Mage Run: units and unlock distances, the manifest and box, lane changes,
+reverse and edge bumps, jump height and time, the input buffer and coyote
+grace, slide / slam / drop, the four obstacle classes (each kind's answers in
+the sim and the validator, and unfair layouts rejected), carts rolling in
+at the far cut, the road cut clean at both ends with items slicing across
+the cuts, carriage roofs, stumbles and the second-stumble crash, arcane rows
+(landing on a tile, row lanes, Arcane II, x2 / x3 coins, running off the
+end), cracked tiles and ramps, scoring and multipliers, staff power-ups, all
+templates fair, the validator rejecting unfair shapes, 2 x 1000 m of
+generated track checked chunk by chunk and join by join, swipes through the
+host, the lane flip seen from the far end, pause by button / rotation /
+app with the countdown, game over / restart / session best, the first-run
+hint, the HUD in portrait and landscape, everything inside the box, and the
+triangle budget). `view_tests` also
+covers portrait (ARCore's rotated centre crop drawn by the passthrough
+shader, content and taps registered).
 Leaked-RID messages at exit are harmless.
 
 ## Android build
@@ -572,8 +667,12 @@ godot --headless --path . --install-android-build-template \
   --export-release "Android AR" build/looking-glass-ar.apk
 ```
 
-Hold the phone sideways: the app is landscape only (it matches the plugin's
-camera rotation).
+The app follows the phone (portrait or landscape) unless a game's manifest
+locks one shape. In landscape the plugin keeps its original stretched camera
+background; in any other rotation the plugin tells ARCore the real display
+rotation and the app draws the camera image itself
+(`platform/ar/passthrough_background.gd`, see the patch). A plugin build
+without `set_display_rotation` keeps AR in landscape.
 
 ## Roadmap
 

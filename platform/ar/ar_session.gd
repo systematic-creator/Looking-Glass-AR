@@ -258,6 +258,17 @@ var _drift_window: float = 0.0
 var _lock_origin: Vector3 = Vector3.ZERO
 var _has_lock_origin: bool = false
 var _lost_seconds: float = 0.0
+## Screen rotation (see _update_display_rotation): the Surface.ROTATION_*
+## ARCore was last told (1 = landscape, the plugin default), whether the
+## app draws the passthrough itself (any rotation but landscape) and the
+## portrait passthrough layer.
+var display_rotation: int = 1
+var custom_background: bool = false
+var passthrough: PassthroughBackground
+## Seconds between rotation polls (a 180-degree flip keeps the window size,
+## so it is polled, not only read on resize).
+const ROTATION_POLL_SECONDS: float = 0.1
+var _rotation_poll: float = 0.0
 
 
 static func clear_saved_area() -> void:
@@ -407,6 +418,17 @@ func _enter_ar() -> void:
 		_saved_background = environment.background_mode
 		# Let the ARCore background renderer's camera image show through.
 		environment.background_mode = Environment.BG_CAMERA_FEED
+	passthrough = PassthroughBackground.new()
+	add_child(passthrough)
+	display_rotation = 1
+	custom_background = false
+	_rotation_poll = ROTATION_POLL_SECONDS
+	if not bridge.supports_rotation():
+		# A landscape-only plugin build: keep the phone in landscape.
+		var orientation: OrientationService = OrientationService.of(self)
+		if orientation != null:
+			orientation.request(LGOrientation.LANDSCAPE)
+		push_warning("ARCore plugin cannot follow the screen rotation; AR stays landscape.")
 	if fallback_camera != null:
 		fallback_camera.current = false
 	reticle = _make_reticle()
@@ -482,6 +504,11 @@ func _teardown_ar() -> void:
 	if hud != null:
 		hud.queue_free()
 		hud = null
+	if passthrough != null:
+		passthrough.queue_free()
+		passthrough = null
+	custom_background = false
+	display_rotation = 1
 	if environment != null:
 		environment.background_mode = _saved_background as Environment.BGMode
 	if fallback_camera != null:
@@ -838,6 +865,7 @@ func _process(delta: float) -> void:
 			fall_back("ARCore session did not start.")
 		return
 	_start_elapsed = 0.0
+	_update_display_rotation(delta)
 	_diag_elapsed += delta
 	var refresh: bool = _diag_elapsed >= DIAG_INTERVAL
 	if refresh:
@@ -1756,6 +1784,45 @@ func refresh_debug() -> void:
 	_diag_elapsed = DIAG_INTERVAL
 
 
+# --- Screen rotation ------------------------------------------------------------
+
+## The phone turned (OrientationService, via GameHost): re-lay out the HUD
+## and tell ARCore at once. The anchor and the board are not touched: the
+## world did not move, only the camera's projection and the screen did.
+func on_orientation_changed(portrait: bool) -> void:
+	if hud != null:
+		hud.apply_layout(portrait)
+	if mode == Mode.AR and bridge != null:
+		_rotation_poll = ROTATION_POLL_SECONDS
+		_update_display_rotation(0.0)
+
+
+## Keep ARCore's display rotation in step with the screen, and draw the
+## passthrough the right way for it: the plugin's camera-feed background in
+## landscape, PassthroughBackground (ARCore's UVs) otherwise.
+func _update_display_rotation(delta: float) -> void:
+	if bridge == null or not bridge.supports_rotation():
+		return
+	_rotation_poll += delta
+	if _rotation_poll >= ROTATION_POLL_SECONDS:
+		_rotation_poll = 0.0
+		var rotation: int = bridge.sync_display_rotation(Vector2(get_tree().root.size))
+		if rotation >= 0:
+			display_rotation = rotation
+	var custom: bool = bridge.uses_custom_background()
+	var shown: bool = false
+	if custom and passthrough != null:
+		shown = passthrough.show_feed(bridge.camera_feed_id(), bridge.background_uvs())
+	elif passthrough != null:
+		passthrough.hide_feed()
+	# Until ARCore reports the rotated UVs (first frame after a turn) keep the
+	# plugin's background rather than a black screen.
+	var use_custom: bool = custom and shown
+	if use_custom != custom_background:
+		custom_background = use_custom
+		PassthroughBackground.apply_background(environment, use_custom)
+
+
 func debug_suffix() -> String:
 	var parts: PackedStringArray = []
 	var drift: String = drift_debug()
@@ -1764,6 +1831,8 @@ func debug_suffix() -> String:
 	if region != null:
 		var names: Dictionary = {SurfaceRegion.Source.TRACED: "traced", SurfaceRegion.Source.FITTED: "fitted"}
 		parts.append("area %s %.2fm²" % [names.get(region.source, "plane"), region.area()])
+	if display_rotation != 1 or custom_background:
+		parts.append("rot %d%s" % [display_rotation, " own-bg" if custom_background else ""])
 	if not extra_debug.is_empty():
 		parts.append(extra_debug)
 	return "" if parts.is_empty() else " · " + " · ".join(parts)

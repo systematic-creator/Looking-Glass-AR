@@ -29,6 +29,9 @@ extends Node3D
 ## Input arrives in board space, only while playing:
 ##   _on_board_tap(point)            a tap hit the board plane at `point`.
 ##   _on_board_drag(from, to)        a one-finger drag, if captures_drag().
+##   _on_swipe(direction, info)      a screen-space swipe, if captures_swipes()
+##                                   (runners): direction is Vector2i.LEFT /
+##                                   RIGHT / UP / DOWN as the screen is held.
 ## Points are Vector3 in board space with y = 0. The platform finds them by
 ## casting the finger's ray onto the plane y = board_surface_height(), so a
 ## raised board (a slab, a table top) takes taps where the player sees its top.
@@ -53,6 +56,13 @@ extends Node3D
 ## when the player changes the height (after _on_board_ready; the first box
 ## is already set when _on_board_ready runs).
 ##
+## Screen orientation: manifest.orientation is "either" by default, so the
+## game must lay out its HUD for portrait and landscape (anchor Controls; use
+## is_portrait() for what anchors cannot express). _on_orientation_changed()
+## runs after the phone turned and the platform re-laid out its own UI. The
+## board, the anchor and the play box never move on a rotation. A game that
+## cannot continue through a rotation (a runner) pauses itself there.
+##
 ## Look: platform/visual/ has the shared hologram kit (Holo, HoloDrop) so
 ## every game can share the same projected-hologram style.
 
@@ -70,6 +80,9 @@ signal box_height_requested(height: float)
 ## Phases of a ray stroke (_on_ray_stroke).
 enum StrokePhase { BEGIN, MOVE, END, CANCEL }
 
+## The screen turned (after _on_board_ready): true = portrait.
+signal orientation_changed(portrait: bool)
+
 ## Set by the platform before the game enters the tree.
 var manifest: LGGameManifest
 
@@ -79,6 +92,7 @@ var _playing: bool = false
 var _ready_called: bool = false
 var _status: String = ""
 var _box: PlayBox
+var _portrait: bool = false
 
 
 # --- Overridable hooks ---------------------------------------------------------
@@ -183,6 +197,28 @@ func is_over_game_ui(_screen: Vector2) -> bool:
 	return false
 
 
+## Return true to receive screen-space swipes (_on_swipe) while playing.
+## The platform then never orbits the touch camera from one-finger strokes;
+## taps still arrive as _on_box_ray / _on_board_tap.
+func captures_swipes() -> bool:
+	return false
+
+
+## A swipe while playing (only if captures_swipes()). `direction` is one of
+## Vector2i.LEFT, RIGHT, UP, DOWN, relative to the screen as currently held.
+## `info`: "velocity" (Vector2, px/s), "time" (s from touch-down or from the
+## stroke's last turn), "from" / "to" (Vector2 screen px), "distance" (px),
+## "index" (n-th swipe in this stroke, 0 = first; 1+ = an S-stroke turn).
+func _on_swipe(_direction: Vector2i, _info: Dictionary) -> void:
+	pass
+
+
+## The screen turned; `portrait` is the new shape. Platform UI has already
+## re-laid out. Move whatever your anchors do not handle; a runner pauses.
+func _on_orientation_changed(_portrait: bool) -> void:
+	pass
+
+
 # --- Queries ---------------------------------------------------------------------
 
 ## Footprint in metres at scale 1 (x = width, y = depth).
@@ -212,6 +248,10 @@ func clamp_to_box(point: Vector3, margin: float = 0.0) -> Vector3:
 func is_board_locked() -> bool:
 	return _board_locked
 
+
+## True while the screen is taller than it is wide.
+func is_portrait() -> bool:
+	return _portrait
 
 ## True if a board-space point lies on the footprint.
 func is_on_board(point: Vector3) -> bool:
@@ -308,6 +348,24 @@ func lg_pinch(scale_factor: float, twist: float) -> bool:
 		return false
 	_on_board_pinch(scale_factor, twist)
 	return true
+
+
+func lg_swipe(direction: Vector2i, info: Dictionary) -> bool:
+	if not _playing or not captures_swipes():
+		return false
+	_on_swipe(direction, info)
+	return true
+
+
+## Before _on_board_ready this only records the shape (build your HUD for
+## is_portrait()); afterwards it runs _on_orientation_changed on a change.
+func lg_set_portrait(portrait: bool) -> void:
+	if portrait == _portrait:
+		return
+	_portrait = portrait
+	if _ready_called:
+		_on_orientation_changed(portrait)
+		orientation_changed.emit(portrait)
 
 
 func lg_exit() -> void:

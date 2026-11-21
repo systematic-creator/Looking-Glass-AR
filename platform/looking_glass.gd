@@ -1,6 +1,7 @@
 extends Node
-## Autoload `LookingGlass`: the platform singleton. Holds the game catalog and
-## moves between the launcher and a running game.
+## Autoload `LookingGlass`: the platform singleton. Holds the game catalog,
+## the screen orientation service and moves between the launcher and a
+## running game.
 
 const LAUNCHER_SCENE: String = "res://platform/launcher/launcher.tscn"
 const HOST_SCENE: String = "res://platform/host/game_host.tscn"
@@ -11,9 +12,13 @@ signal returned_to_launcher()
 var catalog: GameCatalog = GameCatalog.new()
 ## The game the next GameHost loads.
 var selected_game_id: StringName = &""
+## Screen orientation (per-game manifest orientation, rotation, base canvas).
+var orientation: OrientationService
 
 
 func _ready() -> void:
+	orientation = OrientationService.new()
+	add_child(orientation)
 	refresh_catalog()
 
 
@@ -38,5 +43,8 @@ func launch(id: StringName) -> bool:
 
 func return_to_launcher() -> void:
 	selected_game_id = &""
+	# The catalog follows the phone (GameHost already restored it on exit;
+	# this covers any other way back).
+	orientation.restore_default()
 	returned_to_launcher.emit()
 	get_tree().change_scene_to_file(LAUNCHER_SCENE)

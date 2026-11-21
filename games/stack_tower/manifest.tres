@@ -17,6 +17,7 @@ box_height = 0.8
 box_min_height = 0.35
 box_max_height = 1.2
 tall_box = true
+orientation = "either"
 entry = "res://games/stack_tower/stack_tower.tscn"
 version = "0.1.0"
 author = "Looking Glass"

@@ -167,6 +167,60 @@ func diagnostics() -> Dictionary:
 	return out
 
 
+## True if this plugin build follows the screen rotation (patched with
+## set_display_rotation; older builds are landscape-only).
+func supports_rotation() -> bool:
+	return interface != null and interface.has_method("set_display_rotation")
+
+
+## The window's Android Surface.ROTATION_* (0..3) from the Kotlin plugin, or
+## -1 if unknown (desktop, older plugin).
+func device_rotation() -> int:
+	if _plugin == null:
+		return -1
+	var value: Variant = _plugin.call("getDisplayRotation")
+	return int(value) if value != null else -1
+
+
+## Tell ARCore the display rotation: the device's, or (if it cannot say)
+## the one the window shape implies. Returns the rotation applied, or -1.
+func sync_display_rotation(window: Vector2) -> int:
+	if not is_running() or not supports_rotation():
+		return -1
+	var rotation: int = device_rotation()
+	if rotation < 0 or rotation > 3:
+		rotation = LGOrientation.fallback_rotation(window)
+	if rotation != display_rotation():
+		interface.call("set_display_rotation", rotation)
+	return rotation
+
+
+func display_rotation() -> int:
+	if interface == null or not interface.has_method("get_display_rotation"):
+		return 1
+	return int(interface.call("get_display_rotation"))
+
+
+## True when the app must draw the passthrough itself (any rotation but
+## landscape; see PassthroughBackground).
+func uses_custom_background() -> bool:
+	return interface != null and interface.has_method("uses_custom_background") and bool(interface.call("uses_custom_background"))
+
+
+## Camera-texture UVs of the screen corners (NDC order), empty until known.
+func background_uvs() -> PackedVector2Array:
+	if interface == null or not interface.has_method("get_background_uvs"):
+		return PackedVector2Array()
+	return interface.call("get_background_uvs") as PackedVector2Array
+
+
+## The CameraServer feed id of the camera image.
+func camera_feed_id() -> int:
+	if interface == null:
+		return -1
+	return interface.get_camera_feed_id()
+
+
 ## Tracked upward-facing planes: [{pose: Transform3D, polygon: PackedVector2Array}].
 func horizontal_planes() -> Array:
 	if not is_running() or not interface.has_method("get_horizontal_planes"):
