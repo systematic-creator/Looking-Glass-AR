@@ -369,8 +369,10 @@ the game gets `_on_orientation_changed()`. An `"either"` game must lay its
 HUD out for both shapes (anchored Controls plus `is_portrait()`). In AR
 the calibration HUD keeps a button row at the bottom; `ui_bottom_inset()`
 (and the `ui_insets_changed` signal) says how many pixels it takes, so
-bottom-anchored game UI can sit above it (Tattoo Studio's portrait tool bar
-does).
+bottom-anchored game UI can sit above it (Tattoo Studio's portrait tool
+bar, Stack Tower's Style button and Mage Run's staff and pause buttons do;
+`orientation_tests` taps every game's buttons with the board locked in AR
+at 20:9 and 16:9 in both shapes).
 
 **Launcher:** landscape shows every card in one row (cards narrow to 200
 px, grow taller, and narrow cards get a smaller name); portrait shows one

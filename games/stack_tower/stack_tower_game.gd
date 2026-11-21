@@ -215,6 +215,7 @@ func describe_point(_point: Vector3) -> String:
 
 
 func _on_board_ready() -> void:
+	ui_insets_changed.connect(func(_bottom: float) -> void: _layout_hud())
 	var size: Vector2 = get_board_size()
 	add_child(Holo.glow_base(size))
 	_build_pedestal()
@@ -785,9 +786,14 @@ func _build_hud() -> void:
 
 ## Portrait: the platform's status line spans the top beside "‹ Games", so
 ## the score sits below it; the rest is anchored and fits a 720-wide screen.
+## The Style button keeps above the AR HUD's button row while the board is
+## locked in AR (ui_bottom_inset()); it used to sit under it and lose taps.
 func _layout_hud() -> void:
 	if _score_box == null:
 		return
+	var bottom: float = maxf(24.0, ui_bottom_inset() + 12.0)
+	style_button.offset_top = -bottom - 72.0
+	style_button.offset_bottom = -bottom
 	_score_box.offset_top = 112.0 if is_portrait() else 18.0
 	_score_box.offset_left = -300.0 if is_portrait() else -260.0
 	_score_box.offset_right = 300.0 if is_portrait() else 260.0

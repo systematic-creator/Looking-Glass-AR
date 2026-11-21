@@ -113,6 +113,7 @@ func describe_point(_point: Vector3) -> String:
 
 
 func _on_board_ready() -> void:
+	ui_insets_changed.connect(func(_bottom: float) -> void: _layout_hud())
 	var board: Vector2 = get_board_size()
 	scale_u = minf(minf(board.x / DESIGN_BOARD.x, board.y / DESIGN_BOARD.y), get_box().height() / (DESIGN_HEIGHT + BASE_HEIGHT))
 	_world = Node3D.new()
@@ -942,7 +943,9 @@ func _style_button(button: Button, accent: Color) -> void:
 
 ## Portrait: the score sits under the platform's status line (which spans
 ## the top beside "‹ Games"); landscape: top centre, clear of the status at
-## the top right. Staff bottom left, pause bottom right, panels centred.
+## the top right. Staff bottom left, pause bottom right (both above the AR
+## HUD's button row while the board is locked in AR: ui_bottom_inset()),
+## panels centred.
 func _layout_hud() -> void:
 	if _score_box == null:
 		return
@@ -950,15 +953,16 @@ func _layout_hud() -> void:
 	_score_box.offset_top = 112.0 if portrait else 14.0
 	_score_box.offset_left = -300.0 if portrait else -210.0
 	_score_box.offset_right = 300.0 if portrait else 210.0
+	var bottom: float = maxf(20.0, ui_bottom_inset() + 12.0)
 	_staff_panel.offset_left = 20.0
-	_staff_panel.offset_bottom = -20.0
-	_staff_panel.offset_top = -20.0 - 150.0
+	_staff_panel.offset_bottom = -bottom
+	_staff_panel.offset_top = -bottom - 150.0
 	_staff_panel.offset_right = 20.0 + 244.0
 	_staff_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	pause_button.offset_left = -20.0 - 96.0
 	pause_button.offset_right = -20.0
-	pause_button.offset_top = -20.0 - 96.0
-	pause_button.offset_bottom = -20.0
+	pause_button.offset_top = -bottom - 96.0
+	pause_button.offset_bottom = -bottom
 	var w: float = 560.0 if portrait else 720.0
 	for panel: PanelContainer in [_hint_panel, _pause_panel, _over_panel]:
 		panel.offset_left = -w * 0.5

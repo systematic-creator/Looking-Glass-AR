@@ -38,6 +38,8 @@ func run_tests() -> void:
 	xr = FakeXRInterface.new()
 	xr.projection = FakeXRInterface.arcore_projection(Vector2(1920, 1080), 1460.0, Vector2(972.0, 531.0))
 	xr.install()
+	await _test_game_ui_with_locked_ar()
+	await _test_stack_style_after_lock()
 	await _test_ar_rotation()
 	await _test_landscape_only_plugin()
 	xr.uninstall()
@@ -210,6 +212,108 @@ func _check_tattoo_hud(host: GameHost, others: Array[Rect2], label: String) -> v
 		check("%s: portrait tool bar is a row (wider than tall)" % label, right.size.x > right.size.y)
 	check("%s: a touch on a panel is UI, the middle of the screen is not" % label,
 		game.is_over_game_ui(right.get_center()) and game.is_over_game_ui(left.get_center()) and not game.is_over_game_ui(view.get_center()))
+
+
+## Every bundled game, board locked in AR, both shapes at 20:9 and 16:9:
+## each visible game button is clear of the AR HUD's buttons and really
+## receives a pointer at its centre (nothing on top of it eats the tap).
+func _test_game_ui_with_locked_ar() -> void:
+	var catalog := GameCatalog.new()
+	catalog.scan()
+	for window: Vector2i in [PORTRAIT_WINDOW, LANDSCAPE_WINDOW, Vector2i(720, 1280), Vector2i(1280, 720)]:
+		await _set_window(window)
+		var label: String = "%dx%d" % [window.x, window.y]
+		for manifest: LGGameManifest in catalog.list():
+			var host: GameHost = await _ar_host(manifest.id)
+			host.session.place_at_reticle()
+			await frames(2)
+			host.session.set_locked(true)
+			await frames(4)
+			var ar_rects: Array[Rect2] = []
+			for button: Button in host.session.hud.all_buttons():
+				if button.is_visible_in_tree():
+					ar_rects.append(button.get_global_rect())
+			var buttons: Array[Button] = _game_buttons(host.game)
+			var clear: bool = true
+			var reached: bool = true
+			var bad: PackedStringArray = []
+			for button: Button in buttons:
+				var rect: Rect2 = button.get_global_rect()
+				for ar_rect: Rect2 in ar_rects:
+					if _overlap(rect, ar_rect):
+						clear = false
+						bad.append("%s under AR" % button.name)
+				var hit: Control = _control_at(rect.get_center())
+				if hit != button and not button.is_ancestor_of(hit):
+					reached = false
+					bad.append("%s covered by %s" % [button.name, hit.name if hit != null else "nothing"])
+			check("ar locked %s %s: %d game buttons clear of the AR HUD and tappable %s" % [label, manifest.id, buttons.size(), ", ".join(bad)], clear and reached and host.game.is_playing())
+			await free_host(host)
+	await _set_window(LANDSCAPE_WINDOW)
+
+
+## Regression (user report): Stack Tower's Solid / Hologram toggle stopped
+## working once the board was locked in AR (the AR HUD's Unlock / Re-place
+## buttons sat on top of it). A real click must switch the style.
+func _test_stack_style_after_lock() -> void:
+	for window: Vector2i in [PORTRAIT_WINDOW, LANDSCAPE_WINDOW, Vector2i(720, 1280), Vector2i(1280, 720)]:
+		await _set_window(window)
+		var label: String = "%dx%d" % [window.x, window.y]
+		StackTowerGame.session_style = StackTowerGame.Style.HOLOGRAM
+		var host: GameHost = await _ar_host(&"stack_tower")
+		host.session.place_at_reticle()
+		await frames(2)
+		host.session.set_locked(true)
+		await frames(4)
+		var game := host.game as StackTowerGame
+		var layers_before: int = game.layers.size()
+		for expected: StackTowerGame.Style in [StackTowerGame.Style.SOLID, StackTowerGame.Style.HOLOGRAM]:
+			await _click(game.style_button.get_global_rect().get_center())
+			check("stack style after lock %s: a click on Style switches to %s" % [label, "Solid" if expected == StackTowerGame.Style.SOLID else "Hologram"], game.style == expected)
+		check("stack style after lock %s: the clicks never dropped a slab" % label, game.layers.size() == layers_before)
+		check("stack style after lock %s: the button sits above the AR row (inset %d px)" % [label, roundi(game.ui_bottom_inset())],
+			game.ui_bottom_inset() > 40.0 and game.style_button.get_global_rect().end.y <= _view().size.y - game.ui_bottom_inset())
+		# Unlocking drops the AR row's inset back and the button follows.
+		host.session.set_locked(false)
+		await frames(4)
+		check("stack style after lock %s: unlocked, the layout follows the AR HUD (inset %d px, button inside)" % [label, roundi(game.ui_bottom_inset())],
+			_contains(_view(), game.style_button.get_global_rect()))
+		await free_host(host)
+	StackTowerGame.session_style = StackTowerGame.Style.HOLOGRAM
+	await _set_window(LANDSCAPE_WINDOW)
+
+
+func _click(point: Vector2) -> void:
+	_control_at(point)
+	for pressed: bool in [true, false]:
+		var click := InputEventMouseButton.new()
+		click.button_index = MOUSE_BUTTON_LEFT
+		click.pressed = pressed
+		click.position = point
+		click.global_position = point
+		get_viewport().push_input(click, true)
+		await frames(1)
+
+
+static func _game_buttons(game: Node) -> Array[Button]:
+	var out: Array[Button] = []
+	var stack: Array[Node] = [game]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		# Disabled buttons too (Mage Run's Cast waits for a full meter).
+		if node is Button and (node as Button).is_visible_in_tree():
+			out.append(node as Button)
+		stack.append_array(node.get_children())
+	return out
+
+
+## The GUI control a pointer at `point` (viewport px) reaches.
+func _control_at(point: Vector2) -> Control:
+	var motion := InputEventMouseMotion.new()
+	motion.position = point
+	motion.global_position = point
+	get_viewport().push_input(motion, true)
+	return get_viewport().gui_get_hovered_control()
 
 
 func _check_calibration_hud(hud: CalibrationHud, label: String, host: GameHost = null) -> void:
