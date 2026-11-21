@@ -13,7 +13,11 @@ Focus close-up. It is also the test bed for new 3D models (see
   the platform fits the 1.1 m footprint to the table (placement scale), and
   the in-game **Size** slider (10-100 % of life size) shrinks the model. The
   airspace follows the model (just above its head).
-- **Draw / Rotate** (top right). *Draw*: drag a finger on the model to
+- **Either orientation.** Landscape: models, Size and Focus on the left,
+  the tools on the right. Portrait: models, Size and Focus in a strip at the
+  top, the tools in a bar along the bottom (above the AR HUD's buttons while
+  in AR), so the standing model has the middle of the screen.
+- **Draw / Rotate** (top right; bottom bar in portrait). *Draw*: drag a finger on the model to
   tattoo. *Rotate*: drag around the model to spin the turntable. In both
   modes, two-finger pinch resizes the model and twist turns it.
 - **Needle / Eraser**, 9 inks (black, grey wash, red, orange, yellow,

@@ -461,6 +461,7 @@ func _process(delta: float) -> void:
 			toggle_debug()
 	if debug_button != null:
 		debug_button.visible = session != null and session.is_ar() and session.hud != null
+	_update_ui_insets()
 	if _tap_marker != null and _tap_marker.visible:
 		_tap_marker_time -= delta
 		var t: float = clampf(_tap_marker_time / 0.5, 0.0, 1.0)
@@ -468,6 +469,23 @@ func _process(delta: float) -> void:
 		(_tap_marker.material_override as StandardMaterial3D).albedo_color.a = t
 		if _tap_marker_time <= 0.0:
 			_tap_marker.visible = false
+
+
+## Tell the game how much of the screen bottom the AR HUD's buttons take
+## (LGGame.ui_bottom_inset()), so its own bottom bars can sit above them.
+func _update_ui_insets() -> void:
+	if game == null:
+		return
+	var inset: float = 0.0
+	if session != null and session.is_ar() and session.hud != null:
+		var view_h: float = get_viewport().get_visible_rect().size.y
+		for button: Button in session.hud.all_buttons():
+			if not button.is_visible_in_tree():
+				continue
+			var rect: Rect2 = button.get_global_rect()
+			if rect.get_center().y > view_h * 0.5:
+				inset = maxf(inset, view_h - rect.position.y)
+	game.lg_set_ui_bottom_inset(inset)
 
 
 ## Outside AR, ease the orbit camera's centre to the game's focus height

@@ -3,6 +3,9 @@ extends CanvasLayer
 ## Tattoo Studio's on-screen tools. Left: model picker and model size.
 ## Right: Draw / Rotate, Needle / Eraser, Undo (greyed when there is nothing
 ## to take back), ink colours, needle size, Clear all (asks first). The game asks is_over() so touches here never paint.
+## Portrait: the model panel is a strip under the platform's top bar and the
+## tool panel a three-column bar along the bottom, leaving the middle of the
+## screen to the (tall) model. layout() follows the screen shape.
 
 signal model_picked(id: StringName)
 signal model_scale_changed(value: float)
@@ -15,6 +18,10 @@ signal focus_pressed()
 signal undo_pressed()
 
 const PANEL_TOP: float = 110.0
+## Portrait: the model strip sits under the (two-line) host status line.
+const PANEL_TOP_PORTRAIT: float = 130.0
+## Portrait: room kept free below the tool bar.
+const BOTTOM_INSET_PORTRAIT: float = 24.0
 const MARGIN: float = 16.0
 const FONT: int = 20
 
@@ -34,24 +41,46 @@ var undo_button: Button
 var confirm_label: Label
 var confirm_yes: Button
 var confirm_no: Button
+## The layout applied last (true = portrait).
+var portrait: bool = false
+## Platform UI at the screen bottom (LGGame.ui_bottom_inset()): the portrait
+## tool bar sits above it.
+var bottom_inset: float = 0.0
+var _left_box: BoxContainer
+var _model_row: BoxContainer
+var _size_row: BoxContainer
+var _model_caption: Label
+var _right_box: BoxContainer
 
 
 func build(models: Array[TattooModelEntry], palette: Array, brushes: Array) -> void:
 	layer = 3
 	left_panel = _panel("ModelPanel")
-	var left := VBoxContainer.new()
+	var left := BoxContainer.new()
+	left.vertical = true
 	left.add_theme_constant_override("separation", 8)
 	left_panel.add_child(left)
-	left.add_child(_caption("Model"))
+	_left_box = left
+	_model_caption = _caption("Model")
+	left.add_child(_model_caption)
+	_model_row = BoxContainer.new()
+	_model_row.vertical = true
+	_model_row.add_theme_constant_override("separation", 8)
+	left.add_child(_model_row)
 	var model_group := ButtonGroup.new()
 	for entry: TattooModelEntry in models:
 		var b: Button = _button(entry.display_name, Vector2(170, 52), model_group)
 		var id: StringName = entry.id
 		b.pressed.connect(func() -> void: model_picked.emit(id))
 		model_buttons[id] = b
-		left.add_child(b)
+		_model_row.add_child(b)
+	_size_row = BoxContainer.new()
+	_size_row.vertical = true
+	_size_row.add_theme_constant_override("separation", 8)
+	left.add_child(_size_row)
 	scale_label = _caption("Size 100%")
-	left.add_child(scale_label)
+	scale_label.custom_minimum_size = Vector2(170, 0)
+	_size_row.add_child(scale_label)
 	scale_slider = HSlider.new()
 	scale_slider.name = "ScaleSlider"
 	scale_slider.custom_minimum_size = Vector2(170, 48)
@@ -60,17 +89,22 @@ func build(models: Array[TattooModelEntry], palette: Array, brushes: Array) -> v
 	scale_slider.step = 0.01
 	scale_slider.focus_mode = Control.FOCUS_NONE
 	scale_slider.value_changed.connect(func(v: float) -> void: model_scale_changed.emit(v))
-	left.add_child(scale_slider)
+	scale_slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_size_row.add_child(scale_slider)
 	focus_button = _button("Focus", Vector2(170, 56), null)
 	focus_button.name = "FocusButton"
 	focus_button.tooltip_text = "Close-up: tap a spot to magnify it, pinch to zoom"
 	focus_button.pressed.connect(func() -> void: focus_pressed.emit())
-	left.add_child(focus_button)
+	_size_row.add_child(focus_button)
 
 	right_panel = _panel("ToolPanel")
-	var right := VBoxContainer.new()
-	right.add_theme_constant_override("separation", 8)
-	right_panel.add_child(right)
+	# Three columns: modes / tools / Undo, ink, needle size / Clear all.
+	# Stacked in landscape, side by side in portrait.
+	_right_box = BoxContainer.new()
+	_right_box.vertical = true
+	_right_box.add_theme_constant_override("separation", 8)
+	right_panel.add_child(_right_box)
+	var right := _column()
 	var mode_row := HBoxContainer.new()
 	var mode_group := ButtonGroup.new()
 	for i: int in 2:
@@ -95,6 +129,7 @@ func build(models: Array[TattooModelEntry], palette: Array, brushes: Array) -> v
 	undo_button.pressed.connect(func() -> void: undo_pressed.emit())
 	right.add_child(undo_button)
 	show_undo(0)
+	right = _column()
 	right.add_child(_caption("Ink"))
 	var grid := GridContainer.new()
 	grid.columns = 3
@@ -110,6 +145,7 @@ func build(models: Array[TattooModelEntry], palette: Array, brushes: Array) -> v
 		colour_buttons.append(b)
 		grid.add_child(b)
 	right.add_child(grid)
+	right = _column()
 	right.add_child(_caption("Needle size"))
 	var brush_row := HBoxContainer.new()
 	var brush_group := ButtonGroup.new()
@@ -160,12 +196,34 @@ func layout() -> void:
 	if left_panel == null or not is_inside_tree():
 		return
 	var view: Vector2 = get_viewport().get_visible_rect().size
+	_apply_shape(LGOrientation.is_portrait_size(view))
 	left_panel.reset_size()
 	right_panel.reset_size()
 	confirm_panel.reset_size()
-	left_panel.position = Vector2(MARGIN, 170.0)
-	right_panel.position = Vector2(view.x - right_panel.size.x - MARGIN, PANEL_TOP)
+	if portrait:
+		left_panel.position = Vector2((view.x - left_panel.size.x) * 0.5, PANEL_TOP_PORTRAIT)
+		right_panel.position = Vector2((view.x - right_panel.size.x) * 0.5,
+				view.y - right_panel.size.y - maxf(BOTTOM_INSET_PORTRAIT, bottom_inset + 12.0))
+	else:
+		left_panel.position = Vector2(MARGIN, 170.0)
+		right_panel.position = Vector2(view.x - right_panel.size.x - MARGIN, PANEL_TOP)
 	confirm_panel.position = (view - confirm_panel.size) * 0.5
+
+
+## Landscape: two side columns. Portrait: a top strip (models, then size and
+## Focus) and a bottom bar (the three tool columns side by side).
+func _apply_shape(p_portrait: bool) -> void:
+	portrait = p_portrait
+	_model_caption.visible = not portrait
+	_model_row.vertical = not portrait
+	_size_row.vertical = not portrait
+	_right_box.vertical = not portrait
+	_right_box.add_theme_constant_override("separation", 14 if portrait else 8)
+	var model_size: Vector2 = Vector2(140, 52) if portrait else Vector2(170, 52)
+	for b: Variant in model_buttons.values():
+		(b as Button).custom_minimum_size = model_size
+	focus_button.custom_minimum_size = Vector2(130, 52) if portrait else Vector2(170, 56)
+	scale_slider.custom_minimum_size = Vector2(190, 48) if portrait else Vector2(170, 48)
 
 
 func show_confirm() -> void:
@@ -231,6 +289,13 @@ func show_scale(value: float, lo: float, hi: float, life_height: float) -> void:
 func _press(buttons: Array[Button], index: int) -> void:
 	for i: int in buttons.size():
 		buttons[i].set_pressed_no_signal(i == index)
+
+
+func _column() -> VBoxContainer:
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 8)
+	_right_box.add_child(column)
+	return column
 
 
 func _panel(panel_name: String) -> PanelContainer:

@@ -141,6 +141,10 @@ func _on_board_ready() -> void:
 	ui.clear_confirmed.connect(clear_all)
 	ui.focus_pressed.connect(toggle_focus)
 	ui.undo_pressed.connect(undo)
+	ui.bottom_inset = ui_bottom_inset()
+	ui_insets_changed.connect(func(bottom: float) -> void:
+		ui.bottom_inset = bottom
+		ui.layout())
 	ui.set_shown(false)
 	var first: StringName = session_model
 	if find_entry(first) == null and not entries.is_empty():

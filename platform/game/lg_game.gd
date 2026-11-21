@@ -82,6 +82,9 @@ enum StrokePhase { BEGIN, MOVE, END, CANCEL }
 
 ## The screen turned (after _on_board_ready): true = portrait.
 signal orientation_changed(portrait: bool)
+## Platform UI now covers `bottom` px at the bottom of the screen (the AR
+## HUD's button row while in AR; 0 when none). See ui_bottom_inset().
+signal ui_insets_changed(bottom: float)
 
 ## Set by the platform before the game enters the tree.
 var manifest: LGGameManifest
@@ -93,6 +96,7 @@ var _ready_called: bool = false
 var _status: String = ""
 var _box: PlayBox
 var _portrait: bool = false
+var _ui_bottom_inset: float = 0.0
 
 
 # --- Overridable hooks ---------------------------------------------------------
@@ -253,6 +257,13 @@ func is_board_locked() -> bool:
 func is_portrait() -> bool:
 	return _portrait
 
+
+## Viewport pixels at the bottom of the screen taken by platform UI (the AR
+## HUD's buttons while in AR). Keep bottom-anchored game UI above it.
+func ui_bottom_inset() -> float:
+	return _ui_bottom_inset
+
+
 ## True if a board-space point lies on the footprint.
 func is_on_board(point: Vector3) -> bool:
 	var half: Vector2 = get_board_size() * 0.5
@@ -366,6 +377,13 @@ func lg_set_portrait(portrait: bool) -> void:
 	if _ready_called:
 		_on_orientation_changed(portrait)
 		orientation_changed.emit(portrait)
+
+
+func lg_set_ui_bottom_inset(bottom: float) -> void:
+	if is_equal_approx(bottom, _ui_bottom_inset):
+		return
+	_ui_bottom_inset = bottom
+	ui_insets_changed.emit(bottom)
 
 
 func lg_exit() -> void:

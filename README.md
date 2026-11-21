@@ -366,7 +366,11 @@ untouched. On a rotation the base canvas swaps between 1280 x 720 and
 host / AR HUDs re-lay out, the tap slop and swipe threshold are recomputed
 (same inches, new pixels), ARCore is told the display rotation, and then
 the game gets `_on_orientation_changed()`. An `"either"` game must lay its
-HUD out for both shapes (anchored Controls plus `is_portrait()`).
+HUD out for both shapes (anchored Controls plus `is_portrait()`). In AR
+the calibration HUD keeps a button row at the bottom; `ui_bottom_inset()`
+(and the `ui_insets_changed` signal) says how many pixels it takes, so
+bottom-anchored game UI can sit above it (Tattoo Studio's portrait tool bar
+does).
 
 **Launcher:** landscape shows every card in one row (cards narrow to 200
 px, grow taller, and narrow cards get a smaller name); portrait shows one
@@ -597,7 +601,8 @@ a table miniature),
 validation, apply on load / restore on exit, simulated rotations
 2340x1080 <-> 1080x2340: base canvas swap, one callback per turn, the UI
 fade, every HUD (host, AR calibration steps, debug line, Stack Tower,
-launcher) inside the
+Tattoo Studio's panels with and without the AR HUD, the five-card
+launcher at 20:9 and 16:9 with full descriptions at 20:9) inside the
 screen without overlaps in both shapes, AR: ARCore
 told the rotation, the portrait passthrough background, the locked board
 and anchor unmoved, cell taps exact before / after the turn and after a

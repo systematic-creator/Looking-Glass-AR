@@ -21,3 +21,4 @@ entry = "res://games/tattoo_studio/tattoo_studio.tscn"
 version = "0.1.0"
 author = "Looking Glass"
 tags = PackedStringArray("3d", "creative", "models")
+orientation = "either"

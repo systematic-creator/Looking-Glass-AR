@@ -115,7 +115,7 @@ func _test_manifests() -> void:
 	var all_either: bool = catalog.size() >= 3
 	for manifest: LGGameManifest in catalog.list():
 		all_either = all_either and manifest.orientation == "either"
-	check("manifest: every bundled game runs in either orientation", all_either and catalog.size() == 5)
+	check("manifest: every bundled game (Tic-Tac-Toe, Stack Tower, Competitive Evolution, Tattoo Studio, Mage Run) runs in either orientation", all_either and catalog.size() == 5)
 
 
 # --- Apply / restore ----------------------------------------------------------------
@@ -184,6 +184,32 @@ func _check_host_hud(host: GameHost, label: String) -> void:
 	var back: Rect2 = host._back_button.get_global_rect()
 	check("%s: back button and status line inside the screen" % label, _contains(view, back) and _contains(view, status))
 	check("%s: status line clear of the back button" % label, not _overlap(status, back))
+
+
+## Tattoo Studio's panels: inside the screen, clear of each other, of the
+## host's back button and status line, and of `others` (AR HUD buttons).
+func _check_tattoo_hud(host: GameHost, others: Array[Rect2], label: String) -> void:
+	var game := host.game as TattooStudioGame
+	var ui: TattooStudioUI = game.ui
+	var view: Rect2 = _view()
+	var portrait: bool = view.size.y > view.size.x
+	check("%s: studio UI laid out for %s" % [label, "portrait" if portrait else "landscape"], ui.portrait == portrait)
+	var left: Rect2 = ui.left_panel.get_global_rect()
+	var right: Rect2 = ui.right_panel.get_global_rect()
+	check("%s: model and tool panels inside the screen" % label, _contains(view, left) and _contains(view, right))
+	check("%s: model and tool panels apart" % label, not _overlap(left, right))
+	var host_rects: Array[Rect2] = [host._back_button.get_global_rect(), host._status_label.get_global_rect()]
+	var clear: bool = true
+	for rect: Rect2 in host_rects + others:
+		clear = clear and not _overlap(rect, left) and not _overlap(rect, right)
+	check("%s: panels clear of the host and AR HUD (%d other rects)" % [label, others.size()], clear)
+	if portrait:
+		# The middle of the screen stays free for the model.
+		var middle: float = right.position.y - left.end.y
+		check("%s: portrait keeps %d px (>= 50%%) between the strip and the tool bar" % [label, roundi(middle)], middle >= view.size.y * 0.5)
+		check("%s: portrait tool bar is a row (wider than tall)" % label, right.size.x > right.size.y)
+	check("%s: a touch on a panel is UI, the middle of the screen is not" % label,
+		game.is_over_game_ui(right.get_center()) and game.is_over_game_ui(left.get_center()) and not game.is_over_game_ui(view.get_center()))
 
 
 func _check_calibration_hud(hud: CalibrationHud, label: String, host: GameHost = null) -> void:
@@ -267,6 +293,26 @@ func _test_hud_layouts() -> void:
 		await frames(2)
 		_check_host_hud(host, "stack %s" % label)
 		await _check_stack_hud(host, "stack %s" % label)
+		await free_host(host)
+		# Tattoo Studio: side columns in landscape, top strip + bottom bar in portrait.
+		host = await make_host(&"tattoo_studio")
+		await frames(2)
+		_check_host_hud(host, "tattoo %s" % label)
+		_check_tattoo_hud(host, [], "tattoo %s" % label)
+		await free_host(host)
+		host = await _ar_host(&"tattoo_studio")
+		host.session.place_at_reticle()
+		await frames(2)
+		host.session.set_locked(true)
+		await frames(3)
+		var ar_buttons: Array[Rect2] = []
+		for button: Button in host.session.hud.all_buttons():
+			if button.is_visible_in_tree():
+				ar_buttons.append(button.get_global_rect())
+		if host.debug_button.visible:
+			ar_buttons.append(host.debug_button.get_global_rect())
+		_check_tattoo_hud(host, ar_buttons, "tattoo ar locked %s" % label)
+		check("tattoo ar locked %s: the game is told the AR HUD's bottom inset (%d px)" % [label, roundi(host.game.ui_bottom_inset())], host.game.ui_bottom_inset() > 40.0)
 		await free_host(host)
 		# The AR calibration HUD through its steps.
 		host = await _ar_host(&"tic_tac_toe")
