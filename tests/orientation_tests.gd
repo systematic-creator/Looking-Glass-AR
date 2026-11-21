@@ -117,7 +117,7 @@ func _test_manifests() -> void:
 	var all_either: bool = catalog.size() >= 3
 	for manifest: LGGameManifest in catalog.list():
 		all_either = all_either and manifest.orientation == "either"
-	check("manifest: every bundled game (Tic-Tac-Toe, Stack Tower, Competitive Evolution, Tattoo Studio, Mage Run) runs in either orientation", all_either and catalog.size() == 5)
+	check("manifest: every bundled game (Tic-Tac-Toe, Stack Tower, Competitive Evolution, Tattoo Studio, Mage Run, Crystal Defense) runs in either orientation", all_either and catalog.size() == 6)
 
 
 # --- Apply / restore ----------------------------------------------------------------
@@ -462,7 +462,7 @@ func _test_launcher_layout() -> void:
 			inside = inside and _contains(view, (card as Control).get_global_rect())
 		var label: String = "%dx%d" % [window.x, window.y]
 		check("launcher %s: layout follows the screen (%s)" % [label, "portrait" if launcher.portrait else "landscape"], launcher.portrait == (window.y > window.x))
-		check("launcher %s: every card inside the screen (%d cards)" % [label, launcher.cards.size()], inside and launcher.cards.size() == 5)
+		check("launcher %s: every card inside the screen (%d cards)" % [label, launcher.cards.size()], inside and launcher.cards.size() == 6)
 		await frames(2)
 		if window == PORTRAIT_WINDOW or window == LANDSCAPE_WINDOW:
 			check("launcher %s: every description shows in full" % label, launcher.descriptions_fit())

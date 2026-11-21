@@ -15,7 +15,7 @@ const CARD_HEIGHT_LANDSCAPE: float = 340.0
 ## Portrait: one full-width card per row (capped), art on the left. Cards
 ## get shorter (down to CARD_MIN_HEIGHT_PORTRAIT) so the whole catalog fits.
 const CARD_HEIGHT_PORTRAIT: float = 300.0
-const CARD_MIN_HEIGHT_PORTRAIT: float = 170.0
+const CARD_MIN_HEIGHT_PORTRAIT: float = 140.0
 const CARD_MAX_WIDTH_PORTRAIT: float = 640.0
 const CARD_GAP: float = 24.0
 ## Description font: shrinks from the first size to the last to fit its card;
@@ -174,15 +174,21 @@ func descriptions_fit() -> bool:
 ## The card size for the current layout and viewport.
 func card_size() -> Vector2:
 	if not portrait:
-		# Narrower cards (down to CARD_MIN_WIDTH) so the catalog stays one row.
+		# Narrower cards (down to CARD_MIN_WIDTH) so the catalog stays one row;
+		# past that, two rows of shorter cards so it still fits the screen.
 		var n: int = maxi(cards.size(), 1)
 		var avail: float = get_viewport().get_visible_rect().size.x - 2.0 * MARGIN - 12.0
 		var w: float = (avail - CARD_GAP * float(n - 1)) / float(n)
-		w = clampf(w, CARD_MIN_WIDTH, CARD_SIZE.x)
-		# Narrow cards get taller so the description still shows, but never
-		# taller than the screen leaves.
-		var h: float = CARD_HEIGHT_LANDSCAPE + (CARD_SIZE.x - w) * 1.4
-		return Vector2(w, minf(h, maxf(CARD_SIZE.y * 0.8, _cards_area_height())))
+		if w >= CARD_MIN_WIDTH:
+			w = minf(w, CARD_SIZE.x)
+			# Narrow cards get taller so the description still shows, but never
+			# taller than the screen leaves.
+			var h: float = CARD_HEIGHT_LANDSCAPE + (CARD_SIZE.x - w) * 1.4
+			return Vector2(w, minf(h, maxf(CARD_SIZE.y * 0.8, _cards_area_height())))
+		var per_row: int = int(ceil(n / 2.0))
+		w = clampf((avail - CARD_GAP * float(per_row - 1)) / float(per_row), CARD_MIN_WIDTH, CARD_SIZE.x)
+		var h2: float = (_cards_area_height() - CARD_GAP) * 0.5
+		return Vector2(w, clampf(h2, 150.0, CARD_HEIGHT_LANDSCAPE))
 	var width: float = get_viewport().get_visible_rect().size.x - 2.0 * MARGIN_PORTRAIT - 12.0
 	var count: int = maxi(cards.size(), 1)
 	var fit_h: float = (_cards_area_height() - CARD_GAP * float(count - 1)) / float(count)
