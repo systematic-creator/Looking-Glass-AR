@@ -81,13 +81,13 @@ func _test_catalog() -> void:
 	var catalog := GameCatalog.new()
 	var added: int = catalog.scan()
 	check("catalog: scanning res://games registers every bundled game", (
-		added == 3 and catalog.has_game(&"tic_tac_toe") and catalog.has_game(&"competitive_evolution") and catalog.has_game(&"stack_tower")
+		added == 4 and catalog.has_game(&"tic_tac_toe") and catalog.has_game(&"competitive_evolution") and catalog.has_game(&"tattoo_studio") and catalog.has_game(&"stack_tower")
 		and catalog.errors.is_empty()
 	))
 	var names: Array[String] = []
 	for manifest: LGGameManifest in catalog.list():
 		names.append(manifest.display_name)
-	check("catalog: list() is sorted by display name", names == ["Competitive Evolution", "Stack Tower", "Tic-Tac-Toe"])
+	check("catalog: list() is sorted by display name", names == ["Competitive Evolution", "Stack Tower", "Tattoo Studio", "Tic-Tac-Toe"])
 	check("catalog: bundled manifests carry their metadata", (
 		catalog.get_manifest(&"tic_tac_toe").max_players == 2
 		and catalog.get_manifest(&"tic_tac_toe").icon != null
@@ -98,10 +98,10 @@ func _test_catalog() -> void:
 		not catalog.register(catalog.get_manifest(&"tic_tac_toe")) and catalog.errors.size() == 1
 	))
 	check("catalog: invalid manifests are rejected with a reason", (
-		not catalog.register(LGGameManifest.new()) and catalog.errors.size() == 2 and catalog.size() == 3
+		not catalog.register(LGGameManifest.new()) and catalog.errors.size() == 2 and catalog.size() == 4
 	))
 	check("catalog: a new game registers at runtime (future creator uploads)", (
-		catalog.register(_probe_manifest()) and catalog.size() == 4
+		catalog.register(_probe_manifest()) and catalog.size() == 5
 	))
 	var game: LGGame = catalog.instantiate(&"tic_tac_toe")
 	check("catalog: instantiate() builds the game from its scene entry", game is TicTacToeGame and game.manifest != null)
@@ -111,7 +111,7 @@ func _test_catalog() -> void:
 	check("catalog: unregister removes a game", not catalog.has_game(&"probe"))
 	var autoload: Node = get_node_or_null(^"/root/LookingGlass")
 	check("catalog: the LookingGlass autoload scanned the bundled games", (
-		autoload != null and (autoload.get("catalog") as GameCatalog).size() == 3
+		autoload != null and (autoload.get("catalog") as GameCatalog).size() == 4
 	))
 
 
@@ -186,7 +186,7 @@ func _test_launcher() -> void:
 	add_child(launcher)
 	await frames(2)
 	check("launcher: one card per registered game", (
-		launcher.cards.size() == 3 and launcher.cards.has(&"tic_tac_toe") and launcher.cards.has(&"competitive_evolution") and launcher.cards.has(&"stack_tower")
+		launcher.cards.size() == 4 and launcher.cards.has(&"tic_tac_toe") and launcher.cards.has(&"competitive_evolution") and launcher.cards.has(&"tattoo_studio") and launcher.cards.has(&"stack_tower")
 	))
 	var card: Button = launcher.cards[&"tic_tac_toe"] as Button
 	card.pressed.emit()
