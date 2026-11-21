@@ -90,7 +90,7 @@ session: going from the hub into a game and back never restarts tracking
 
 | Tab | Content |
 | --- | --- |
-| **Play** (default) | The current catalog cards, plus a progress line per card ("Best 4210", "12 / 30 stars", "Run in progress") and a "Continue" badge when a game has a resumable run slot. Tapping a card opens the game sheet. |
+| **Play** (default) | The current catalog cards, plus a progress line per card ("Best 4210", "Best wave 23", "Run in progress") and a "Continue" badge when a game has a resumable run slot. Tapping a card opens the game sheet. |
 | **Profile** | Avatar (colour + glyph), display name, "Playing as guest" / signed-in account, totals (play time, games played, sessions), a per-game progress list, and local leaderboards per game. |
 | **Store** | The shared currency balance, ways to earn it, things to spend it on, and the purchase section behind "Coming soon" (section 10). |
 | **Settings** | Profile switch (local profiles on this phone), sign in / link (P2), age and terms (13+), sound, haptics, reduced motion, left-handed HUD, AR (forget saved placements, tracking help), data (export, reset a game, delete profile / account), about and privacy policy, debug overlay. |
@@ -188,7 +188,7 @@ Each slot file is one JSON object:
   "device": "7f2c…",
   "saved_at": 1795212345,
   "game_version": "0.3.0",
-  "summary": {"line": "12 / 30 stars", "progress": 0.4},
+  "summary": {"line": "Best wave 23 (Cryptid, Normal)", "progress": 0.5},
   "data": { "...": "the game's own data" },
   "sha256": "…of the canonical JSON of data"
 }
@@ -238,7 +238,7 @@ func _save_merge(slot: StringName, local: Dictionary, remote: Dictionary, base: 
 | Member | Meaning |
 | --- | --- |
 | `data: Dictionary` | The game's data (after defaults / migration). Mutate it directly or through `set_value`. |
-| `get_value(key, default)` / `set_value(key, value)` | Dotted keys allowed (`"levels.meadow_1.stars"`); `set_value` marks the slot dirty. |
+| `get_value(key, default)` / `set_value(key, value)` | Dotted keys allowed (`"worlds.cryptid.normal.table.best_wave"`); `set_value` marks the slot dirty. |
 | `mark_dirty()` | After mutating `data` directly. |
 | `commit() -> Error` | Write now if dirty (atomic). Cheap when clean. |
 | `exists() -> bool`, `erase()` | Slot present / delete it (and its backup and blobs). |
@@ -282,7 +282,7 @@ dirty slot of the running game at:
 | `&"rotate"` | Orientation pause (cheap; it is a natural checkpoint) |
 
 Games commit themselves at meaningful moments (wave cleared, game over,
-level won). Commits are synchronous and small (JSON under 256 KB writes in
+new best). Commits are synchronous and small (JSON under 256 KB writes in
 well under a frame on a phone); blobs are written on a worker thread.
 
 **Atomic write**, per slot:
@@ -328,25 +328,39 @@ agree with that worker before either side codes it:
 
   ```json
   {
-    "campaign": {
-      "unlocked": ["meadow_1", "meadow_2"],
-      "levels": {
-        "meadow_1": {"stars": 3, "best_wave": 20, "best_time_ms": 412000, "wins": 2}
+    "worlds": {
+      "cryptid": {
+        "normal": {
+          "table": {
+            "best_wave": 23, "best_score": 4180, "runs": 14,
+            "top": [{"wave": 23, "score": 4180, "date": "2026-11-18", "grid": [14, 14], "peak_multiplier": 1.5}]
+          }
+        }
       }
     },
-    "totals": {"waves_cleared": 140, "towers_built": 610, "play_ms": 7200000},
+    "unlocked": ["cryptid", "riverbend"],
+    "totals": {"runs": 40, "waves_cleared": 610, "kills": 9120, "boss_kills": 12, "towers_built": 830, "play_ms": 7200000},
     "settings": {"autostart": true, "speed": 2}
   }
   ```
 
-  Summary: `{"line": "12 / 30 stars", "progress": stars / max_stars}`.
+  Crystal Defense is **endless waves per world (map)**, ranked by waves
+  cleared with score as the tie-break, so there are no levels, stars or
+  campaign progress. `worlds.<world>.<difficulty>.<tier>` holds the best
+  wave and the local top 10 for that world x difficulty (Easy, Normal,
+  Hard, Nightmare) x size tier (Table, Floor, Arena); `unlocked` lists the
+  worlds unlocked by wave milestones ("reach wave 10 in any world").
+  Summary: `{"line": "Best wave 23 (Cryptid, Normal)", "progress":
+  unlocked worlds / all worlds}`.
 - **Slot `run`** (`sync_policy` local): a resumable snapshot, committed at
-  the **end of each wave** (the phase machine's build phase is a clean
-  checkpoint; mid-wave state is not saved), erased on win / loss:
+  the **start of every prep** (and at every wave clear with Autostart on;
+  the phase machine's build phase is a clean checkpoint, mid-wave state is
+  not saved), erased on defeat (runs are endless, so there is no win):
 
   ```json
   {
-    "level": "meadow_2", "wave": 7, "seed": 91823, "rng_state": "…",
+    "world": "riverbend", "difficulty": "normal", "tier": "table", "grid": [14, 14],
+    "wave": 7, "seed": 91823, "rng_state": "…",
     "crystal_hp": 14,
     "wallet": {"balance": 230, "total_earned": 1210, "total_spent": 980},
     "towers": [{"kind": "arc", "cell": [3, 5], "level": 2, "target": "first"}],
@@ -365,8 +379,12 @@ agree with that worker before either side codes it:
   free of nodes where possible (fixed tick from `SimClock`, seeded RNG,
   inputs as commands such as "build arc at (3, 5)"), so a co-op mode can run
   the same simulation in a Nakama authoritative match.
-- **Leaderboards** (manifest `leaderboards`, section 4.2): `best_wave_<level>`
-  (higher is better) and `fastest_<level>` (time in ms, lower is better).
+- **Leaderboards** (manifest `leaderboards`, section 4.2): one per world x
+  difficulty x size tier, `best_wave_<world>_<difficulty>_<tier>` (for
+  example `best_wave_cryptid_normal_table`), higher is better, ranked by
+  waves cleared with score as the tie-break (submitted as `wave * 1_000_000
+  + score`, or as Nakama's score + subscore). Tiers never compete with each
+  other.
 - Until `LGSave` lands, Crystal Defense can write the same JSON through a
   thin local adapter with the same `save_slot()` / `commit()` calls, so
   switching later is a one-file change.
@@ -429,7 +447,7 @@ Declared in the manifest so the hub can show them without loading the game:
 
 ```gdscript
 # LGLeaderboardDef (Resource), in manifest.leaderboards: Array[LGLeaderboardDef]
-id: StringName            # "best_score", "fastest_meadow_1"
+id: StringName            # "best_score", "best_wave_cryptid_normal_table"
 display_name: String
 order: int                # DESCENDING (higher is better) or ASCENDING (times)
 format: StringName        # &"int", &"time_ms", &"distance_cm", &"height_cm"
@@ -516,11 +534,12 @@ the same slot since the last sync. In order:
 
 1. **Game merge.** If the game implements `_save_merge(slot, local, remote,
    base)`, its result is uploaded as the new revision. Best for real
-   progress (Crystal Defense: union of unlocked levels, max stars and best
-   wave per level, summed totals since `base`).
+   progress (Crystal Defense: union of unlocked worlds, max best wave and
+   merged top-10 tables per world x difficulty x tier, summed totals since
+   `base`).
 2. **Declared field rules** (no code): the manifest can list merge rules
-   per key path, e.g. `{"campaign.levels.*.stars": "max",
-   "campaign.unlocked": "union", "totals.*": "sum_since_base",
+   per key path, e.g. `{"worlds.*.*.*.best_wave": "max",
+   "unlocked": "union", "totals.*": "sum_since_base",
    "settings": "newest"}`. Unlisted keys fall to 3.
 3. **Default: newest wins** (by `saved_at`, ties by `rev`), and the other
    copy is kept server-side as a **conflict backup** for 30 days, restorable
@@ -863,7 +882,7 @@ mirrored onto their table, with the others shown as presences around it:
   | Tic-Tac-Toe | 5 per finished game (local two-player counts once per round, not per mark) | 30 |
   | Stack Tower | 1 per 5 layers; +10 for a new personal best | 60 |
   | Mage Run | 1 per 100 m; +10 for a new personal best | 80 |
-  | Crystal Defense | 10 per level won; +5 per star the first time it is earned | 100 |
+  | Crystal Defense | 1 per 2 waves cleared in a run; +10 for a new best wave on that world / difficulty / size tier | 100 |
   | Tattoo Studio | 5 per session with at least 5 minutes of drawing | 20 |
   | Competitive Evolution | none (placeholder) | 0 |
   | Any multiplayer match | +10 per finished match (on top of the game's own rate) | 50 |
@@ -878,7 +897,7 @@ mirrored onto their table, with the others shown as presences around it:
     or two days and a large one in about a week.
 - **Not the same as Crystal Defense's mana (D8).** Crystal Defense's
   in-run **mana** is the game's own `Wallet`: earned and spent inside a run,
-  reset every level, never saved to the account and never exchanged for
+  reset every run, never saved to the account and never exchanged for
   Shards. To avoid confusion with the crystal theme, Shards are only shown
   in platform UI (hub, Store, the result screen's "+20 Shards" line with the
   Shards icon), never in Crystal Defense's in-run HUD, and the two never
